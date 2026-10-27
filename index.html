@@ -32,6 +32,8 @@ label.chk{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:non
 .layout{display:grid;grid-template-columns:1fr 330px;gap:10px}
 .chartwrap{position:relative;height:calc(100vh - 170px);min-height:380px;background:var(--bg);border:1px solid var(--line);border-radius:10px;overflow:hidden}
 #cv{width:100%;height:100%;display:block;touch-action:none}
+
+.zoom{position:absolute;right:72px;top:4px;display:flex;gap:4px}.zoom .btn{padding:2px 10px;font-size:14px}
 #ohlc{position:absolute;left:8px;top:6px;font-size:12px;color:var(--mut);pointer-events:none;text-shadow:0 0 4px var(--bg)}
 #topinfo{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;margin-bottom:8px;font-size:13px}
 #topinfo b{font-variant-numeric:tabular-nums}
@@ -50,7 +52,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:
 th,td{padding:4px 6px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
 th:first-child,td:first-child{text-align:left}
 th{color:var(--mut);font-weight:600}
-tr.click{cursor:pointer}tr.click:hover{background:var(--panel2)}
+tr.click{cursor:pointer}tr.click:hover,tr.sel{background:var(--panel2)}tr.sel td:first-child{box-shadow:inset 3px 0 0 #ffd54f}
 .dots{letter-spacing:2px}
 .logbox{max-height:130px;overflow:auto;font-size:12px;color:var(--mut)}
 .logbox div{padding:1px 0}
@@ -133,8 +135,12 @@ tr.click{cursor:pointer}tr.click:hover{background:var(--panel2)}
     <div id="topinfo"></div>
     <div class="layout">
       <div>
-        <div class="chartwrap"><canvas id="cv"></canvas><div id="ohlc"></div></div>
+        <div class="chartwrap"><canvas id="cv"></canvas><div id="ohlc"></div><div class="zoom"><button class="btn sm" data-zoom="0.8" aria-label="放大">＋</button><button class="btn sm" data-zoom="1.25" aria-label="縮小">－</button></div></div>
         <div id="reviewbar" class="card rv" hidden>
+          <button class="btn sm" id="rvPrev">◀ 上一個進場點</button>
+          <button class="btn sm primary" id="rvNext">下一個進場點 ▶</button>
+          <span id="rvFocus" class="mut"></span>
+          <span style="flex-basis:100%;height:0"></span>
           <button class="btn sm" data-step="-10">« 10</button>
           <button class="btn sm" data-step="-1">‹ 1</button>
           <input type="range" id="rvSlider">
@@ -142,7 +148,7 @@ tr.click{cursor:pointer}tr.click:hover{background:var(--panel2)}
           <button class="btn sm" data-step="10">10 »</button>
           <label class="chk"><input type="checkbox" id="rvFuture" checked> 顯示後續走勢</label>
           <label class="chk"><input type="checkbox" id="rvSig" checked> SOP 標準訊號與結果</label>
-          <label class="chk"><input type="checkbox" id="rvBest" checked> 事後最佳多空段</label>
+          <label class="chk"><input type="checkbox" id="rvBest"> 事後最佳多空段</label>
           <span id="rvTime" class="mut"></span>
         </div>
       </div>
@@ -178,6 +184,7 @@ tr.click{cursor:pointer}tr.click:hover{background:var(--panel2)}
         </div>
         <div id="sumPanel" hidden>
           <div class="card"><h3>本局結果</h3><div id="sumStats"></div></div>
+          <div class="card"><h3>SOP 進場點（點選跳到該處，鍵盤 N / P 切換）</h3><div style="overflow:auto"><table id="sigTable"></table></div></div>
           <div class="card"><h3>本局交易（點選可跳到進場處）</h3><div style="overflow:auto"><table id="sumTable"></table></div></div>
           <div class="card">
             <button class="btn primary" id="btnNext">再來一局</button>
@@ -414,20 +421,21 @@ function sopRun(an,cs,rr){
   for(const o of an.obs)byBar[o.at].push({type:'OB',dir:o.dir});
   for(const f of an.fvg)byBar[f.at].push({type:'FVG',dir:f.dir});
   const st=new Array(N),sigs=[],cancels=[];
-  let ch={dir:0,types:new Set(),start:0,used:false,touchAt:-1};
+  let ch={dir:0,types:new Set(),start:0,used:false,touchAt:-1,armedAt:-1};
   for(let k=0;k<N;k++){
     const c=cs[k];
     for(const s of byBar[k]){
       if(s.dir===ch.dir){
         ch.types.add(s.type);
-        if(ch.used&&(s.type==='BOS'||s.type==='CH')){ch.used=false;ch.touchAt=-1}
+        if(ch.used&&(s.type==='BOS'||s.type==='CH')){ch.used=false;ch.touchAt=-1;ch.armedAt=-1}
       }else if(s.type==='FVG'&&ch.dir!==0)continue;
       else{
         if(ch.types.size>=3&&!ch.used)cancels.push({k,dir:ch.dir,by:s.type});
-        ch={dir:s.dir,types:new Set([s.type]),start:k,used:false,touchAt:-1};
+        ch={dir:s.dir,types:new Set([s.type]),start:k,used:false,touchAt:-1,armedAt:-1};
       }
     }
     const armed=ch.dir!==0&&ch.types.size>=3&&!ch.used;
+    if(armed&&ch.armedAt<0)ch.armedAt=k;
     let phase=ch.dir===0?'none':ch.used?'used':armed?'armed':'building',ob1=null,ob2=null,signal=null;
     if(armed){
       const d=ch.dir;({ob1,ob2}=sopObs(an,cs,k,d));
@@ -437,7 +445,7 @@ function sopRun(an,cs,rr){
         if(ob1&&isEngulf(cs,k,d,an.atr)){
           const ref=ob2||ob1,sl=d===1?ref.lo:ref.hi,risk=(c.c-sl)*d;
           if(risk>0){
-            signal={k,dir:d,entry:c.c,sl,tp:rr>0?c.c+d*risk*rr:null,hasOb2:!!ob2};
+            signal={k,dir:d,entry:c.c,sl,tp:rr>0?c.c+d*risk*rr:null,hasOb2:!!ob2,ob1,ob2,armedAt:ch.armedAt,touchAt:ch.touchAt};
             sigs.push(signal);ch.used=true;phase='signal';
           }
         }
@@ -597,20 +605,59 @@ function drawChart(cv,o){
     }
   }
   if(o.signals){
-    // SOP 標準訊號：畫成 TradingView 風險回報工具的樣子
+    // SOP 標準訊號：風險回報框（TradingView 樣式），聚焦中的訊號較亮
     g.save();g.beginPath();g.rect(0,plotT,plotR,priceB-plotT);g.clip();
     for(const s of o.signals){
       if(s.k>cur||s.end<first||s.k>end)continue;
       const x0=xi(s.k),x1=xi(Math.min(s.end,end))+bw/2,ye=yp(s.entry);
-      g.fillStyle='rgba(239,83,80,.16)';g.fillRect(x0,Math.min(ye,yp(s.sl)),x1-x0,Math.abs(yp(s.sl)-ye));
-      if(s.tp!=null){g.fillStyle='rgba(38,166,154,.16)';g.fillRect(x0,Math.min(ye,yp(s.tp)),x1-x0,Math.abs(yp(s.tp)-ye))}
+      g.globalAlpha=o.focus&&o.focus!==s?0.4:1;
+      g.fillStyle='rgba(239,83,80,.18)';g.fillRect(x0,Math.min(ye,yp(s.sl)),x1-x0,Math.abs(yp(s.sl)-ye));
+      if(s.tp!=null){g.fillStyle='rgba(38,166,154,.18)';g.fillRect(x0,Math.min(ye,yp(s.tp)),x1-x0,Math.abs(yp(s.tp)-ye))}
       g.strokeStyle='#cfd8e3';g.beginPath();g.moveTo(x0,ye);g.lineTo(x1,ye);g.stroke();
-      const lab=s.end>cur?'進行中':s.res==='win'?'✓ 停利':s.res==='loss'?'✗ 停損':'未結束';
-      g.fillStyle=s.res==='win'&&s.end<=cur?COL.up:s.res==='loss'&&s.end<=cur?COL.dn:'#cfd8e3';
+      const lab=s.res==='win'?'✓ 停利':s.res==='loss'?'✗ 停損':'未結束';
+      g.fillStyle=s.res==='win'?COL.up:s.res==='loss'?COL.dn:'#cfd8e3';
       g.textAlign='left';g.font='bold 11px system-ui,sans-serif';
-      g.fillText(`SOP ${s.dir===1?'多':'空'} ${lab}`,x0+2,s.dir===1?yp(s.sl)+10:yp(s.sl)-10);g.font='11px system-ui,sans-serif';
+      g.fillText(`#${s.n} ${lab}`,x0+4,s.dir===1?yp(s.sl)+10:yp(s.sl)-10);g.font='11px system-ui,sans-serif';
+      g.globalAlpha=1;
+    }
+    // 聚焦訊號：當時的 OB1 / OB2
+    const fs=o.focus;
+    if(fs&&fs.k<=cur){
+      for(const [ob,name] of[[fs.ob1,'OB1 進場區'],[fs.ob2,'OB2 防守（停損）']]){
+        if(!ob)continue;
+        const xa=Math.max(0,xi(ob.i)-bw/2),xb=xi(fs.k)+bw/2,ya=yp(ob.hi),yb=yp(ob.lo);
+        g.strokeStyle=fs.dir===1?'#82a7ff':'#ff8a80';g.lineWidth=2;g.setLineDash([6,3]);g.strokeRect(xa,ya,xb-xa,yb-ya);g.setLineDash([]);g.lineWidth=1;
+        g.fillStyle=g.strokeStyle;g.textAlign='left';g.font='bold 11px system-ui,sans-serif';g.fillText(name,xa+3,ya-7);g.font='11px system-ui,sans-serif';
+      }
     }
     g.restore();
+    // 進場點：整根高亮 + 大箭頭 + 編號；聚焦訊號另外標 ① ② ③ 步驟
+    const pill=(t,x,y,bg)=>{
+      g.font='bold 12px system-ui,sans-serif';const w=g.measureText(t).width+12;
+      g.fillStyle=bg;g.beginPath();g.roundRect?g.roundRect(x-w/2,y-10,w,20,10):g.rect(x-w/2,y-10,w,20);g.fill();
+      g.fillStyle='#0d1117';g.textAlign='center';g.fillText(t,x,y+.5);g.font='11px system-ui,sans-serif';
+    };
+    for(const s of o.signals){
+      if(s.k>cur||s.k<first||s.k>end)continue;
+      const f=o.focus===s,x=xi(s.k),c=cs[s.k],d=s.dir;
+      g.fillStyle=f?'rgba(255,213,79,.22)':'rgba(255,213,79,.09)';g.fillRect(x-bw/2,plotT,bw,priceB-plotT);
+      const col=f?'#ffd54f':d===1?'#4dd0c4':'#ff8a80',y0=d===1?yp(c.l)+6:yp(c.h)-6;
+      g.fillStyle=col;g.beginPath();
+      if(d===1){g.moveTo(x,y0);g.lineTo(x-9,y0+14);g.lineTo(x-3,y0+14);g.lineTo(x-3,y0+26);g.lineTo(x+3,y0+26);g.lineTo(x+3,y0+14);g.lineTo(x+9,y0+14)}
+      else{g.moveTo(x,y0);g.lineTo(x-9,y0-14);g.lineTo(x-3,y0-14);g.lineTo(x-3,y0-26);g.lineTo(x+3,y0-26);g.lineTo(x+3,y0-14);g.lineTo(x+9,y0-14)}
+      g.fill();
+      pill(`${f?'③ ':''}#${s.n} ${d===1?'做多':'做空'} ${fmtP(s.entry)}`,x,y0+d*40,col);
+    }
+    if(fs&&fs.k<=cur){
+      const steps=[[fs.armedAt,'① 連招成立'],[fs.touchAt,'② 回踩 OB1']],stack={};
+      for(const [i,t] of steps){
+        if(i<0||i<first||i>end||i>cur)continue;
+        const n=stack[i]=(stack[i]||0)+1,c=cs[i];
+        const y=fs.dir===1?yp(c.h)-22-(n-1)*24:yp(c.l)+22+(n-1)*24;
+        g.strokeStyle='rgba(144,202,249,.8)';g.setLineDash([2,2]);g.beginPath();g.moveTo(xi(i),fs.dir===1?yp(c.h)-2:yp(c.l)+2);g.lineTo(xi(i),y);g.stroke();g.setLineDash([]);
+        pill(t,xi(i),y,'#90caf9');
+      }
+    }
   }
   // 交易連線
   if(o.tradeLines){
@@ -677,7 +724,7 @@ function startSession(data){
   const an=analyze(cs);
   S={cs,an,sop:sopRun(an,cs,cfg.rr),sym:data.sym,synthetic:!!data.synthetic,hist:cfg.hist,cur:cfg.hist-1,N:cs.length,
      over:false,pos:null,trades:[],fills:[],realized:0,eqCurve:[0],log:[],sid:Date.now(),
-     rv:{cur:0,future:$('#rvFuture').checked,sig:$('#rvSig').checked,best:$('#rvBest').checked},best:null};
+     rv:{cur:0,focus:null,future:$('#rvFuture').checked,sig:$('#rvSig').checked,best:$('#rvBest').checked},best:null};
   $('#setup').hidden=true;$('#game').hidden=false;$('#playPanel').hidden=false;$('#sumPanel').hidden=true;$('#reviewbar').hidden=true;
   $('#warn').innerHTML=S.synthetic?'<div class="warn">目前使用的是模擬（亂數）資料，僅供測試，不是真實歷史走勢。</div>':'';
   log('開始訓練。目前只看得到已發生的 K 棒。');
@@ -761,9 +808,12 @@ function endSession(){
   const db=DB.load();
   db.sessions.push({sid:S.sid,sym:S.sym,t0:cs[0].t,pnl:S.realized,n:S.trades.length,dd,at:Date.now()});DB.save(db);
   S.rv.cur=S.N-1;
+  S.sigList=S.sop.sigs.filter(s=>s.k>=S.hist-1);
+  S.sigList.forEach((s,i)=>{s.n=i+1;s.took=S.trades.some(t=>t.dir===s.dir&&Math.abs(t.entryIdx-s.k)<=1)});
   $('#playPanel').hidden=true;$('#sumPanel').hidden=false;$('#reviewbar').hidden=false;
   const sl=$('#rvSlider');sl.min=S.hist-1;sl.max=S.N-1;sl.value=S.N-1;
   renderSummary();renderAll();
+  if(S.sigList.length)sigFocus(0);
 }
 
 /* ============================== 繪製 / UI ============================== */
@@ -775,7 +825,7 @@ function chartOpts(){
   if(!S.over)return{cs:S.cs,an:S.an,cur:S.cur,end:S.cur,viewN:cfg.view,layers:cfg.layers,pos:S.pos,fills:S.fills,timeLabel,sopObs};
   const rv=S.rv,end=rv.future?Math.min(S.N-1,rv.cur+Math.round(cfg.view*0.4)):rv.cur;
   return{cs:S.cs,an:S.an,cur:rv.cur,end,viewN:cfg.view,layers:cfg.layers,pos:null,fills:S.fills,timeLabel,sopObs,
-    best:rv.best?S.best:null,signals:rv.sig?S.sop.sigs.filter(s=>s.k>=S.hist-1):null,tradeLines:S.trades};
+    best:rv.best?S.best:null,signals:rv.sig?S.sigList:null,focus:rv.sig?S.sigList[rv.focus]:null,tradeLines:S.trades};
 }
 function redraw(){if(S)drawChart($('#cv'),chartOpts())}
 function renderAll(){renderTop();renderPos();renderHint();renderLog();renderButtons();redraw()}
@@ -846,6 +896,9 @@ function renderSummary(){
     stat('符合 SOP 的交易',a?`${S.trades.filter(t=>t.sop).length} / ${a.n}`:'-')+stat('事後最佳多/空',`${(b.long.pct*100).toFixed(1)}% / ${(b.short.pct*100).toFixed(1)}%`)+`</div>`+
     sopSummary()+
     `<div class="mut" style="margin-top:8px;font-size:12px">${S.sym}　${fmtT(S.cs[0].t)} ～ ${fmtT(S.cs[S.N-1].t)}</div>`;
+  $('#sigTable').innerHTML=`<tr><th>#</th><th>時間</th><th>方向</th><th>結果</th><th>你</th></tr>`+
+    S.sigList.map((s,i)=>`<tr class="click" data-i="${i}"><td>${s.n}</td><td>${fmtT(S.cs[s.k].t).slice(5)}</td><td class="${s.dir===1?'up':'dn'}">${s.dir===1?'多':'空'}</td>`+
+      `<td class="${s.res==='win'?'up':s.res==='loss'?'dn':''}">${s.res==='win'?'停利':s.res==='loss'?'停損':'未結束'}</td><td class="${s.took?'up':'dn'}">${s.took?'✓ 跟上':'✗ 錯過'}</td></tr>`).join('')||'<tr><td>本局沒有 SOP 訊號</td></tr>';
   $('#sumTable').innerHTML=`<tr><th>#</th><th>向</th><th>單位</th><th>損益</th><th>R</th><th>SOP</th><th>出場</th></tr>`+
     S.trades.map((t,i)=>`<tr class="click" data-i="${i}"><td>${i+1}</td><td class="${t.dir===1?'up':'dn'}">${t.dir===1?'多':'空'}</td><td>${t.units}</td>`+
       `<td class="${cls(t.pnl)}">${fmtM(t.pnl)}</td><td>${t.R!=null?fmtM(t.R):'-'}</td><td>${t.score}/3</td><td>${{manual:'手動',sl:'停損',tp:'停利',end:'結束'}[t.reason]}</td></tr>`+
@@ -860,6 +913,16 @@ function sopSummary(){
     `停利 <span class="up">${w}</span>、停損 <span class="dn">${l}</span>${sg.length-w-l?`、未結束 ${sg.length-w-l}`:''}`+
     `${w+l?`（照做勝率 ${(w/(w+l)*100).toFixed(0)}%，${cfg.rr}R 淨 ${fmtM(w*cfg.rr-l,1)}R）`:''}。你跟上 ${took} 個，錯過 ${missed} 個。`+
     `${S.sop.cancels.filter(c=>c.k>=S.hist-1).length?` 反向訊號取消的連招 ${S.sop.cancels.filter(c=>c.k>=S.hist-1).length} 次。`:''}</div>`;
+}
+function sigFocus(i){
+  const L=S.sigList;if(!L.length)return;
+  i=(i+L.length)%L.length;S.rv.focus=i;
+  if(!S.rv.sig){S.rv.sig=true;$('#rvSig').checked=true}
+  const s=L[i];
+  $('#rvFocus').innerHTML=`第 <b style="color:var(--txt)">${s.n}</b> / ${L.length} 個：${fmtT(S.cs[s.k].t)}　${s.dir===1?'<span class="up">做多</span>':'<span class="dn">做空</span>'} @ ${fmtP(s.entry)}　SL ${fmtP(s.sl)}　TP ${fmtP(s.tp)}　`+
+    (s.res==='win'?'<span class="up">停利</span>':s.res==='loss'?'<span class="dn">停損</span>':'未結束')+`　${s.took?'你有跟上':'<span class="dn">你錯過了</span>'}`;
+  $$('#sigTable tr.click').forEach(r=>r.classList.toggle('sel',+r.dataset.i===i));
+  rvGo(s.k);
 }
 function rvGo(v){
   const r=S.rv;r.cur=Math.max(S.hist-1,Math.min(S.N-1,v));$('#rvSlider').value=r.cur;
@@ -965,6 +1028,8 @@ document.addEventListener('DOMContentLoaded',()=>{
   $$('#reviewbar [data-step]').forEach(b=>b.onclick=()=>rvGo(S.rv.cur+ +b.dataset.step));
   $('#rvFuture').onchange=e=>{S.rv.future=e.target.checked;redraw()};
   $('#rvSig').onchange=e=>{S.rv.sig=e.target.checked;redraw()};
+  $('#rvPrev').onclick=()=>sigFocus((S.rv.focus??0)-1);$('#rvNext').onclick=()=>sigFocus(S.rv.focus==null?0:S.rv.focus+1);
+  $('#sigTable').onclick=e=>{const tr=e.target.closest('tr.click');if(tr&&S)sigFocus(+tr.dataset.i)};
   $('#rvBest').onchange=e=>{S.rv.best=e.target.checked;redraw()};
   $('#sumTable').onclick=e=>{const tr=e.target.closest('tr.click');if(tr&&S){rvGo(S.trades[+tr.dataset.i].entryIdx)}};
   // 圖表互動
@@ -977,6 +1042,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   cv.addEventListener('mousedown',e=>{if(S&&S.over){const r=cv.getBoundingClientRect();drag={x:e.clientX-r.left,cur:S.rv.cur}}});
   window.addEventListener('mouseup',()=>drag=null);
   cv.addEventListener('wheel',e=>{e.preventDefault();cfg.view=Math.max(30,Math.min(300,Math.round(cfg.view*(e.deltaY>0?1.12:0.89))));saveCfg();redraw()},{passive:false});
+  $$('[data-zoom]').forEach(b=>b.onclick=()=>{cfg.view=Math.max(30,Math.min(300,Math.round(cfg.view*+b.dataset.zoom)));saveCfg();redraw()});
   new ResizeObserver(()=>redraw()).observe(cv.parentElement);
   window.addEventListener('keydown',e=>{
     if(!S||S.over||$('#game').hidden||$('#tab-play').hidden)return;
@@ -986,7 +1052,8 @@ document.addEventListener('DOMContentLoaded',()=>{
     else if(k==='s'||k==='arrowdown'){e.preventDefault();act('sell')}
     else if(k==='w'||k===' '||k==='arrowright'){e.preventDefault();act('wait')}
   });
-  window.addEventListener('keydown',e=>{if(S&&S.over&&!$('#tab-play').hidden&&(e.key==='ArrowLeft'||e.key==='ArrowRight')&&document.activeElement.tagName!=='INPUT'){e.preventDefault();rvGo(S.rv.cur+(e.key==='ArrowRight'?1:-1))}});
+  window.addEventListener('keydown',e=>{if(S&&S.over&&!$('#tab-play').hidden&&document.activeElement.tagName!=='INPUT'&&/^[np]$/i.test(e.key)){sigFocus((S.rv.focus??-1)+(e.key.toLowerCase()==='n'?1:-1));return}
+    if(S&&S.over&&!$('#tab-play').hidden&&(e.key==='ArrowLeft'||e.key==='ArrowRight')&&document.activeElement.tagName!=='INPUT'){e.preventDefault();rvGo(S.rv.cur+(e.key==='ArrowRight'?1:-1))}});
   // 供自動測試
   window.__dbg={get S(){return S}};
 });
