@@ -309,3 +309,6 @@ plotshape(showEv and evBOSb, "BOS↑", shape.triangleup, location.belowbar, colo
 plotshape(showEv and evBOSs, "BOS↓", shape.triangledown, location.abovebar, color.new(color.red, 40), text="BOS", size=size.tiny)
 plotshape(showEv and evBOSbBad, "BOS↑未過CH高", shape.xcross, location.belowbar, color.gray, size=size.tiny)
 plotshape(showEv and evBOSsBad, "BOS↓未過CH低", shape.xcross, location.abovebar, color.gray, size=size.tiny)
+
+// 不顯示的輔助線（確保腳本一定有輸出，避免「至少要有一個 plot / strategy」的編譯錯誤）
+plot(trend, "結構方向(1多/-1空)", color=color.gray, display=display.data_window)
