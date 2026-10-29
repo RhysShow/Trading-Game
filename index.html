@@ -316,7 +316,7 @@ function atrArr(cs,n=14){
 function analyze(cs,L=3){
   const N=cs.length,atr=atrArr(cs);
   const piv=[],ev=[],obs=[],fvg=[],sweeps=[],eq=[];
-  let lastH=null,lastL=null,trend=0,actH=[],actL=[],startIdx=0,curExt=null;
+  let lastH=null,lastL=null,trend=0,actH=[],actL=[],chIdx=-1;
   for(let k=0;k<N;k++){
     const c=cs[k],i=k-L;
     // 擺動高低點（延遲 L 根確認）
@@ -347,9 +347,9 @@ function analyze(cs,L=3){
     // 結構突破（以收盤）
     if(lastH&&!lastH.broken&&c.c>lastH.p){
       const isCH=trend===-1;let valid=true,ext=null;
-      if(isCH){ext=-Infinity;for(let m=startIdx;m<=k;m++)ext=Math.max(ext,cs[m].h);startIdx=k;curExt=ext}
-      else if(curExt!=null)valid=c.c>curExt;
-      ev.push({type:isCH?'CHoCH':'BOS',dir:1,level:lastH.p,from:lastH.i,at:k,valid,ext:isCH?ext:curExt});
+      if(isCH)chIdx=k;
+      else if(chIdx>=0){ext=-Infinity;for(let m=chIdx;m<k;m++)ext=Math.max(ext,cs[m].h);valid=c.c>ext}
+      ev.push({type:isCH?'CHoCH':'BOS',dir:1,level:lastH.p,from:lastH.i,at:k,valid,ext});
       trend=1;lastH.broken=true;
       const st=Math.max(k-60,lastL?Math.min(lastL.i,lastH.i):lastH.i);
       let j=st;for(let m=st;m<=k;m++)if(cs[m].l<cs[j].l)j=m;
@@ -358,9 +358,9 @@ function analyze(cs,L=3){
     }
     if(lastL&&!lastL.broken&&c.c<lastL.p){
       const isCH=trend===1;let valid=true,ext=null;
-      if(isCH){ext=Infinity;for(let m=startIdx;m<=k;m++)ext=Math.min(ext,cs[m].l);startIdx=k;curExt=ext}
-      else if(curExt!=null)valid=c.c<curExt;
-      ev.push({type:isCH?'CHoCH':'BOS',dir:-1,level:lastL.p,from:lastL.i,at:k,valid,ext:isCH?ext:curExt});
+      if(isCH)chIdx=k;
+      else if(chIdx>=0){ext=Infinity;for(let m=chIdx;m<k;m++)ext=Math.min(ext,cs[m].l);valid=c.c<ext}
+      ev.push({type:isCH?'CHoCH':'BOS',dir:-1,level:lastL.p,from:lastL.i,at:k,valid,ext});
       trend=-1;lastL.broken=true;
       const st=Math.max(k-60,lastH?Math.min(lastH.i,lastL.i):lastL.i);
       let j=st;for(let m=st;m<=k;m++)if(cs[m].h>cs[j].h)j=m;
@@ -574,7 +574,7 @@ function drawChart(cv,o){
       const col=e.valid?(e.dir===1?COL.up:COL.dn):'#6b7686',y=yp(e.level),x0=xi(e.from),x1=xi(e.at);
       g.strokeStyle=col;g.lineWidth=e.type==='CHoCH'?1.6:1;g.setLineDash(e.type==='CHoCH'?[]:[5,4]);
       g.beginPath();g.moveTo(x0,y);g.lineTo(x1,y);g.stroke();g.setLineDash([]);g.lineWidth=1;
-      g.fillStyle=col;g.font='bold 11px system-ui,sans-serif';g.fillText((e.type==='CHoCH'?'CH':'BOS')+(e.dir===1?'↑':'↓')+(e.valid?'':'✗未達前'+(e.dir===1?'高':'低')),(x0+x1)/2,y+(e.dir===1?-8:9));g.font='11px system-ui,sans-serif';
+      g.fillStyle=col;g.font='bold 11px system-ui,sans-serif';g.fillText((e.type==='CHoCH'?'CH':'BOS')+(e.dir===1?'↑':'↓')+(e.valid?'':'✗未過CH'+(e.dir===1?'高':'低')),(x0+x1)/2,y+(e.dir===1?-8:9));g.font='11px system-ui,sans-serif';
     }
   }
   // 流動性
@@ -880,7 +880,7 @@ function renderHint(){
   if(['armed','touched','signal'].includes(s.phase))h+=`<span>OB1 進場區</span><span>${z(s.ob1)}</span><span>OB2 防守</span><span>${z(s.ob2)}</span>`;
   if(s.signal)h+=`<span>進場</span><span class="${dc}">${fmtP(s.signal.entry)}</span><span>SL / TP</span><span>${fmtP(s.signal.sl)} / ${fmtP(s.signal.tp)}</span>`;
   if(cancel&&S.cur-cancel.k<=20)h+=`<span>最近取消</span><span class="dn">反向 ${cancel.by}，${S.cur-cancel.k} 根前</span>`;
-  box.innerHTML=h+`</div><div class="mut" style="font-size:11px;margin-top:6px">SOP：同向 3 條件（BOS 須突破 CH 之前整段的極值）→ 回踩 OB1 → 吞噬收線進場（進場價須站上前兩根實體中點）；停損 OB2 外側，停利 ${cfg.rr}R。反向 CH 出現就放棄。</div>`;
+  box.innerHTML=h+`</div><div class="mut" style="font-size:11px;margin-top:6px">SOP：同向 3 條件（BOS 須收在 CH 之後的最高點／最低點之外）→ 回踩 OB1 → 吞噬收線進場（進場價須站上前兩根實體中點）；停損 OB2 外側，停利 ${cfg.rr}R。反向 CH 出現就放棄。</div>`;
 }
 const GOOD=/符合SOP|連招成立|回踩OB|吞噬確認/,BAD=/追價|無連招|逆連招|停損用/;
 function tagHtml(tags){return tags.map(t=>`<span class="tag ${GOOD.test(t)?'g':BAD.test(t)?'r':''}">${t}</span>`).join('')}
