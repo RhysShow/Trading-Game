@@ -115,8 +115,11 @@ tr.click{cursor:pointer}tr.click:hover,tr.sel{background:var(--panel2)}tr.sel td
           <select id="cMode"><option value="sop">3+1 課程 SOP（停損＝第二個 OB 外側）</option><option value="free">自由模式</option></select>
         </label>
         <label class="f">停利風報比 R（課程：1 或 1.5；0 = 不設）<input type="number" id="cRR" min="0" step="0.5"></label>
-        <label class="f">進場價須站上前幾根的實體中點<input type="number" id="cBodyN" min="1" max="6"></label>
-        <label class="chk" style="align-self:end"><input type="checkbox" id="cRej"> 進場 K 棒須碰到 OB1 並收在 OB 之外</label>
+        <label class="f">回踩確認最早在第幾根（第 1 根＝首次碰到 OB1 的 K 棒）
+          <select id="cConf"><option value="3">第 3 根（課程標準）</option><option value="2">第 2 根起</option><option value="1">第 1 根起</option></select>
+        </label>
+        <label class="chk" style="align-self:end"><input type="checkbox" id="cOb2"> 必須找到兩個 OB 才算標準進場（停損放第 2 個）</label>
+        <label class="chk" style="align-self:end"><input type="checkbox" id="cEng"> 額外要求大實體並突破前一根高點／低點（舊版吞噬條件）</label>
         <label class="f" id="wrapSlMode">自動停損停利（自由模式）
           <select id="cSlMode"><option value="off">關閉（全由我決定）</option><option value="atr">開啟（ATR 倍數）</option></select>
         </label>
@@ -226,7 +229,7 @@ const DB={
   save(d){try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}}
 };
 const SYMS=['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','DOGEUSDT','ADAUSDT','AVAXUSDT','LINKUSDT','LTCUSDT'];
-const DEF={source:'binance',sym:'RANDOM',hist:150,play:500,view:90,unit:1000,maxU:5,fee:0.05,mode:'sop',slMode:'off',slK:1.5,rr:1,bodyN:3,rejectOb:true,blind:true,hint:false,
+const DEF={source:'binance',sym:'RANDOM',hist:150,play:500,view:90,unit:1000,maxU:5,fee:0.05,mode:'sop',slMode:'off',slK:1.5,rr:1,confirmFrom:3,needOb2:true,engulfExtra:false,blind:true,hint:false,
   layers:{struct:true,ob:true,fvg:true,liq:false,pd:false,swing:false}};
 let cfg=(()=>{try{return Object.assign({},DEF,JSON.parse(localStorage.getItem(CKEY))||{},{})}catch(e){return{...DEF}}})();
 cfg.layers=Object.assign({},DEF.layers,cfg.layers||{});
@@ -408,67 +411,71 @@ function contextAt(an,cs,k,dir){
 }
 
 /* ============================== 3+1 課程 SOP ==============================
-   1. 連招：同向的 CH / BOS / FVG / OB 連續出現 3 種以上（反向 FVG 忽略；反向 CH/BOS/OB 打斷並取消）
-   2. 回踩：價格回到最近的同向 OB（OB1），OB2 為防守位
-   3. 吞噬：OB 內出現大陽線收在前一根高點之上（做空：大陰線收在前一根低點之下）才進場
-   4. 停損：OB2 外側（沒有 OB2 時用 OB1 外側）；停利：rr 倍風險
+   1. 連招：同向的 CH / BOS / FVG / OB 出現 3 種以上
+        - 反向 FVG 忽略；反向 CH / BOS / OB 出現就取消
+        - BOS 必須收在「CH 之後的極值」之外才算完成延續
+   2. 回踩：連招成立後，第一根碰到 OB1 的 K 棒是「第 1 根」，再算到第 3 根為確認視窗
+   3. 確認：第 3 根收盤同時越過 OB 外緣（多：OB 上緣之上；空：下緣之下），
+           且越過第 1 根實體的中點，才是標準進場（收線進場）
+   4. 停損：由成立位置往下（空：往上）找兩個同向 OB，放在第 2 個 OB 的完整影線之外；停利：rr 倍風險
    每根 K 棒的狀態只用到該根收盤為止的資訊。 */
-function isEngulf(cs,k,d,atr,ob){
-  const n=cfg.bodyN||3;
-  if(k<n)return false;const c=cs[k],p=cs[k-1],body=Math.abs(c.c-c.o);
-  if(body<0.5*atr[k])return false;
-  if(d===1?!(c.c>c.o&&c.c>p.h):!(c.c<c.o&&c.c<p.l))return false;
-  // 前 n 根各自的實體中點：進場價必須全部站上（做空：全部跌破）
-  for(let m=1;m<=n;m++){const mid=(cs[k-m].o+cs[k-m].c)/2;if(d===1?c.c<=mid:c.c>=mid)return false}
-  // 從 OB 冒出頭：這根碰到 OB1，且收盤收在 OB 之外（多：OB 上緣之上；空：OB 下緣之下）
-  if(cfg.rejectOb&&ob){
-    if(d===1?!(c.l<=ob.hi&&c.c>ob.hi):!(c.h>=ob.lo&&c.c<ob.lo))return false;
-  }
-  return true;
+function isEngulf(cs,k,d,atr){   // 選用的額外條件：大實體並突破前一根高點（做空：低點）
+  if(k<1)return false;const c=cs[k],p=cs[k-1];
+  if(Math.abs(c.c-c.o)<0.5*atr[k])return false;
+  return d===1?(c.c>c.o&&c.c>p.h):(c.c<c.o&&c.c<p.l);
 }
-function sopObs(an,cs,k,d){
+function sopList(an,cs,k,d){
   const c=cs[k];
-  const list=an.obs.filter(o=>o.dir===d&&active(o,k)&&(d===1?o.lo<c.c:o.hi>c.c))
+  return an.obs.filter(o=>o.dir===d&&active(o,k)&&(d===1?o.lo<c.c:o.hi>c.c))
     .sort((a,b)=>d===1?b.hi-a.hi:a.lo-b.lo);
-  return{ob1:list[0]||null,ob2:list[1]||null};
 }
+function sopObs(an,cs,k,d){const l=sopList(an,cs,k,d);return{ob1:l[0]||null,ob2:l[1]||null}}
 function sopRun(an,cs,rr){
   const N=cs.length,byBar=Array.from({length:N},()=>[]);
   for(const e of an.ev)if(e.valid)byBar[e.at].push({type:e.type==='CHoCH'?'CH':'BOS',dir:e.dir});
   for(const o of an.obs)byBar[o.at].push({type:'OB',dir:o.dir});
   for(const f of an.fvg)byBar[f.at].push({type:'FVG',dir:f.dir});
-  const st=new Array(N),sigs=[],cancels=[];
-  let ch={dir:0,types:new Set(),start:0,used:false,touchAt:-1,armedAt:-1};
+  const st=new Array(N),sigs=[],cancels=[],from=Math.min(3,Math.max(1,cfg.confirmFrom||3));
+  const fresh=(dir,types,k)=>({dir,types,start:k,used:false,first:-1,zone:null,armedAt:-1});
+  let ch=fresh(0,new Set(),0);
   for(let k=0;k<N;k++){
     const c=cs[k];
     for(const s of byBar[k]){
       if(s.dir===ch.dir){
         ch.types.add(s.type);
-        if(ch.used&&(s.type==='BOS'||s.type==='CH')){ch.used=false;ch.touchAt=-1;ch.armedAt=-1}
+        if(ch.used&&(s.type==='BOS'||s.type==='CH')){ch.used=false;ch.first=-1;ch.zone=null;ch.armedAt=-1}
       }else if(s.type==='FVG'&&ch.dir!==0)continue;
       else{
         if(ch.types.size>=3&&!ch.used)cancels.push({k,dir:ch.dir,by:s.type});
-        ch={dir:s.dir,types:new Set([s.type]),start:k,used:false,touchAt:-1,armedAt:-1};
+        ch=fresh(s.dir,new Set([s.type]),k);
       }
     }
     const armed=ch.dir!==0&&ch.types.size>=3&&!ch.used;
     if(armed&&ch.armedAt<0)ch.armedAt=k;
-    let phase=ch.dir===0?'none':ch.used?'used':armed?'armed':'building',ob1=null,ob2=null,signal=null;
+    let phase=ch.dir===0?'none':ch.used?'used':armed?'armed':'building',ob1=null,ob2=null,signal=null,conf=false,touchRec=-1;
     if(armed){
-      const d=ch.dir;({ob1,ob2}=sopObs(an,cs,k,d));
-      if(ob1&&(d===1?c.l<=ob1.hi:c.h>=ob1.lo))ch.touchAt=k;
-      if(ch.touchAt>=0&&k-ch.touchAt<=3){
-        phase='touched';
-        if(ob1&&isEngulf(cs,k,d,an.atr,ob1)){
-          const ref=ob2||ob1,sl=d===1?ref.lo:ref.hi,risk=(c.c-sl)*d;
-          if(risk>0){
-            signal={k,dir:d,entry:c.c,sl,tp:rr>0?c.c+d*risk*rr:null,hasOb2:!!ob2,ob1,ob2,armedAt:ch.armedAt,touchAt:ch.touchAt};
-            sigs.push(signal);ch.used=true;phase='signal';
+      const d=ch.dir,list=sopList(an,cs,k,d);
+      ob1=list[0]||null;ob2=list[1]||null;
+      if(ch.first>=0&&(k-ch.first>2||(ch.zone.mit!=null&&ch.zone.mit<=k))){ch.first=-1;ch.zone=null}
+      if(ch.first<0&&ob1&&(d===1?c.l<=ob1.hi:c.h>=ob1.lo)){ch.first=k;ch.zone=ob1}
+      touchRec=ch.first;
+      if(ch.first>=0){
+        phase='touched';ob1=ch.zone;
+        const zi=list.indexOf(ch.zone);ob2=zi>=0?(list[zi+1]||null):null;
+        if(k-ch.first>=from-1){
+          const z=ch.zone,f=cs[ch.first],mid=(f.o+f.c)/2;
+          conf=(d===1?(c.c>z.hi&&c.c>mid):(c.c<z.lo&&c.c<mid))&&(!cfg.engulfExtra||isEngulf(cs,k,d,an.atr));
+          if(conf&&!(cfg.needOb2&&!ob2)){
+            const ref=ob2||z,sl=d===1?ref.lo:ref.hi,risk=(c.c-sl)*d;
+            if(risk>0){
+              signal={k,dir:d,entry:c.c,sl,tp:rr>0?c.c+d*risk*rr:null,hasOb2:!!ob2,ob1:z,ob2,armedAt:ch.armedAt,touchAt:ch.first,mid};
+              sigs.push(signal);ch.used=true;ch.first=-1;ch.zone=null;phase='signal';
+            }
           }
         }
       }
     }
-    st[k]={dir:ch.dir,types:[...ch.types],phase,ob1,ob2,signal,touchAt:ch.touchAt};
+    st[k]={dir:ch.dir,types:[...ch.types],phase,ob1,ob2,signal,touchAt:touchRec,conf};
   }
   // 結果（只供復盤使用，會看未來）
   for(const s of sigs){
@@ -486,15 +493,16 @@ function sopRun(an,cs,rr){
 function sopCheck(sop,an,cs,k,d){
   const s=sop.st[k];
   const chain=s.dir===d&&s.types.length>=3;
-  const pullback=chain&&s.touchAt>=0&&k-s.touchAt<=3;
-  const engulf=isEngulf(cs,k,d,an.atr,s.ob1);
+  const pullback=chain&&s.touchAt>=0;
+  const conf=chain&&pullback&&!!s.conf;
   const exact=!!(s.signal&&s.signal.dir===d);
   const tags=[];
   if(exact)tags.push('符合SOP');
   if(chain)tags.push('連招成立');else if(s.dir===-d&&s.types.length>=3)tags.push('逆連招');else tags.push('無連招');
   if(pullback)tags.push('回踩OB');else if(chain)tags.push('追價');
-  if(engulf)tags.push('吞噬確認');
-  return{score:(chain?1:0)+(pullback?1:0)+(engulf?1:0),exact,tags};
+  if(conf)tags.push('確認收線');
+  if(conf&&!exact)tags.push('缺OB2');
+  return{score:(chain?1:0)+(pullback?1:0)+(conf?1:0),exact,tags};
 }
 
 /* ============================== 圖表 ============================== */
@@ -665,8 +673,12 @@ function drawChart(cv,o){
       g.fill();
       pill(`${f?'③ ':''}#${s.n} ${d===1?'做多':'做空'} ${fmtP(s.entry)}`,x,y0+d*40,col);
     }
+    if(fs&&fs.k<=cur&&fs.touchAt>=0&&fs.mid!=null){
+      const ym=yp(fs.mid);g.strokeStyle='#ffd54f';g.setLineDash([3,3]);g.beginPath();g.moveTo(xi(fs.touchAt)-bw/2,ym);g.lineTo(xi(fs.k)+bw,ym);g.stroke();g.setLineDash([]);
+      g.fillStyle='#ffd54f';g.textAlign='left';g.fillText('第1根實體½',xi(fs.k)+bw+2,ym);
+    }
     if(fs&&fs.k<=cur){
-      const steps=[[fs.armedAt,'① 連招成立'],[fs.touchAt,'② 回踩 OB1']],stack={};
+      const steps=[[fs.armedAt,'① 連招成立'],[fs.touchAt,'② 第1根回踩 OB1']],stack={};
       for(const [i,t] of steps){
         if(i<0||i<first||i>end||i>cur)continue;
         const n=stack[i]=(stack[i]||0)+1,c=cs[i];
@@ -875,8 +887,8 @@ function renderButtons(){
   else if(p.dir===1){set('#bBuy','加碼買進',`+1 單位 (B)`);set('#bSell','平倉','全部賣出 (S)')}
   else{set('#bSell','加碼賣出',`+1 單位 (S)`);set('#bBuy','平倉','全部買回 (B)')}
 }
-const PHASE={none:'尚無訊號',building:'收集條件中（未滿 3 個）',armed:'連招成立，等待回踩 OB1',touched:'已觸及 OB1，等待吞噬 K 線收線',
-  signal:'進場訊號：吞噬收線確認',used:'本輪訊號已出現，等下一個同向結構突破'};
+const PHASE={none:'尚無訊號',building:'收集條件中（未滿 3 個）',armed:'連招成立，等待回踩 OB1',touched:'已碰到 OB1，等待確認收線',
+  signal:'進場訊號：確認收線成立',used:'本輪訊號已出現，等下一個同向結構突破'};
 function renderHint(){
   const box=$('#hintBox');box.hidden=!cfg.hint;if(!cfg.hint)return;
   const s=S.sop.st[S.cur],d=s.dir,dc=d===1?'up':'dn';
@@ -884,14 +896,15 @@ function renderHint(){
   const types=['CH','BOS','FVG','OB'].map(t=>`<span class="tag ${s.types.includes(t)&&d!==0?(d===1?'g':'r'):''}">${t}</span>`).join('');
   const cancel=[...S.sop.cancels].reverse().find(c=>c.k<=S.cur);
   const z=o=>o?`${fmtP(o.lo)} – ${fmtP(o.hi)}`:'無';
+  const pn=s.touchAt>=0?`（第 ${S.cur-s.touchAt+1} 根）`:'';
   let h=`<div class="kv"><span>連招方向</span><span>${dirT}</span><span>已出現</span><span><span class="tags" style="justify-content:flex-end">${types}</span></span>`+
-    `<span>階段</span><span>${PHASE[s.phase]}</span>`;
+    `<span>階段</span><span>${PHASE[s.phase]}${s.phase==='touched'?pn:''}</span>`;
   if(['armed','touched','signal'].includes(s.phase))h+=`<span>OB1 進場區</span><span>${z(s.ob1)}</span><span>OB2 防守</span><span>${z(s.ob2)}</span>`;
   if(s.signal)h+=`<span>進場</span><span class="${dc}">${fmtP(s.signal.entry)}</span><span>SL / TP</span><span>${fmtP(s.signal.sl)} / ${fmtP(s.signal.tp)}</span>`;
   if(cancel&&S.cur-cancel.k<=20)h+=`<span>最近取消</span><span class="dn">反向 ${cancel.by}，${S.cur-cancel.k} 根前</span>`;
-  box.innerHTML=h+`</div><div class="mut" style="font-size:11px;margin-top:6px">SOP：同向 3 條件（BOS 須收在 CH 之後的最高點／最低點之外）→ 回踩 OB1 → 吞噬收線進場（進場價須站上前 ${cfg.bodyN} 根實體中點${cfg.rejectOb?'，且收在 OB 之外':''}）；停損 OB2 外側，停利 ${cfg.rr}R。反向 CH 出現就放棄。</div>`;
+  box.innerHTML=h+`</div><div class="mut" style="font-size:11px;margin-top:6px">SOP：同向 3 條件（BOS 須收在 CH 之後的最高點／最低點之外）→ 回踩 OB1，第 ${cfg.confirmFrom} 根起收盤須越過 OB 外緣與第 1 根實體中點；停損第 2 個 OB 外側，停利 ${cfg.rr}R。反向 CH 出現就放棄。</div>`;
 }
-const GOOD=/符合SOP|連招成立|回踩OB|吞噬確認/,BAD=/追價|無連招|逆連招|停損用/;
+const GOOD=/符合SOP|連招成立|回踩OB|確認收線/,BAD=/追價|無連招|逆連招|停損用|缺OB2/;
 function tagHtml(tags){return tags.map(t=>`<span class="tag ${GOOD.test(t)?'g':BAD.test(t)?'r':''}">${t}</span>`).join('')}
 
 function agg(ts){
@@ -968,11 +981,11 @@ function renderStats(){
   const row=(name,sub)=>{const x=agg(sub);return x?`<tr><td>${name}</td><td>${x.n}</td><td>${(x.wr*100).toFixed(0)}%</td><td class="${cls(x.pnl)}">${fmtM(x.pnl,1)}</td><td class="${cls(x.exp)}">${fmtM(x.exp,2)}</td><td>${fmtPF(x.pf)}</td><td>${x.avgR!=null?fmtM(x.avgR):'-'}</td></tr>`:''};
   const head='<tr><th>分類</th><th>筆數</th><th>勝率</th><th>總損益</th><th>期望值</th><th>PF</th><th>平均R</th></tr>';
   const sopTs=ts.filter(x=>x.mode);
-  const tagList=['符合SOP','連招成立','回踩OB','吞噬確認','追價','無連招','逆連招','停損用OB1','停損用ATR'];
+  const tagList=['符合SOP','連招成立','回踩OB','確認收線','缺OB2','追價','無連招','逆連招','停損用OB1','停損用ATR'];
   h+=`<div class="card"><h3>SOP 紀律對照</h3><div style="overflow:auto"><table>${head}${row('完全符合 SOP',sopTs.filter(x=>x.sop))}${row('未完全符合',sopTs.filter(x=>!x.sop))}</table></div>`+
     `<p class="mut" style="font-size:12px;margin:8px 0 0">課程宣稱嚴格照做勝率約 60%（1:1）。上面「完全符合 SOP」那一列就是你自己的實測數字。</p></div>`;
   h+=`<div class="card"><h3>依進場條件（同一筆可有多個標籤）</h3><div style="overflow:auto"><table>${head}${tagList.map(t=>row(t,sopTs.filter(x=>x.tags.includes(t)))).join('')}</table></div></div>`;
-  h+=`<div class="card"><h3>依 SOP 步驟完成數（連招 / 回踩 / 吞噬）</h3><div style="overflow:auto"><table>${head}${[0,1,2,3].map(s=>row(s+' / 3',sopTs.filter(x=>x.score===s))).join('')}</table></div></div>`;
+  h+=`<div class="card"><h3>依 SOP 步驟完成數（連招 / 回踩 / 確認收線）</h3><div style="overflow:auto"><table>${head}${[0,1,2,3].map(s=>row(s+' / 3',sopTs.filter(x=>x.score===s))).join('')}</table></div></div>`;
   h+=`<div class="card"><h3>依方向與出場方式</h3><div style="overflow:auto"><table>${head}${row('多單',ts.filter(x=>x.dir===1))}${row('空單',ts.filter(x=>x.dir===-1))}${row('有加碼',ts.filter(x=>x.units>1))}${row('單一單位',ts.filter(x=>x.units===1))}${row('手動平倉',ts.filter(x=>x.reason==='manual'))}${row('停損',ts.filter(x=>x.reason==='sl'))}${row('停利',ts.filter(x=>x.reason==='tp'))}</table></div></div>`;
   h+=`<div class="card"><button class="btn sm" id="btnExport">匯出 JSON</button> <button class="btn sm" id="btnReset" style="color:var(--dn)">清除所有紀錄</button></div>`;
   box.innerHTML=h;
@@ -992,7 +1005,7 @@ function renderStats(){
 /* ============================== 事件 ============================== */
 function cfgToForm(){
   $('#cSource').value=cfg.source;$('#cSym').value=cfg.sym;$('#cHist').value=cfg.hist;$('#cPlay').value=cfg.play;
-  $('#cUnit').value=cfg.unit;$('#cMaxU').value=cfg.maxU;$('#cFee').value=cfg.fee;$('#cSlMode').value=cfg.slMode;$('#cMode').value=cfg.mode;$('#cSlK').value=cfg.slK;$('#cRR').value=cfg.rr;$('#cBodyN').value=cfg.bodyN;$('#cRej').checked=cfg.rejectOb;
+  $('#cUnit').value=cfg.unit;$('#cMaxU').value=cfg.maxU;$('#cFee').value=cfg.fee;$('#cSlMode').value=cfg.slMode;$('#cMode').value=cfg.mode;$('#cSlK').value=cfg.slK;$('#cRR').value=cfg.rr;$('#cConf').value=cfg.confirmFrom;$('#cOb2').checked=cfg.needOb2;$('#cEng').checked=cfg.engulfExtra;
   $('#cBlind').checked=cfg.blind;$('#cHint').checked=cfg.hint;
   $$('[data-layer]').forEach(e=>e.checked=!!cfg.layers[e.dataset.layer]);
   syncSource();
@@ -1003,7 +1016,7 @@ function formToCfg(){
   cfg.hist=Math.round(n('#cHist',150,50,400));cfg.play=Math.round(n('#cPlay',500,50,900));
   if(cfg.hist+cfg.play>1000)cfg.play=1000-cfg.hist;
   cfg.unit=n('#cUnit',1000,100,1e6);cfg.maxU=Math.round(n('#cMaxU',5,1,20));cfg.fee=n('#cFee',0.05,0,2);
-  cfg.mode=$('#cMode').value;cfg.slMode=$('#cSlMode').value;cfg.slK=n('#cSlK',1.5,0.3,20);cfg.rr=n('#cRR',1,0,20);cfg.bodyN=Math.round(n('#cBodyN',3,1,6));cfg.rejectOb=$('#cRej').checked;cfg.blind=$('#cBlind').checked;saveCfg();
+  cfg.mode=$('#cMode').value;cfg.slMode=$('#cSlMode').value;cfg.slK=n('#cSlK',1.5,0.3,20);cfg.rr=n('#cRR',1,0,20);cfg.confirmFrom=+$('#cConf').value;cfg.needOb2=$('#cOb2').checked;cfg.engulfExtra=$('#cEng').checked;cfg.blind=$('#cBlind').checked;saveCfg();
 }
 function syncSource(){
   const s=$('#cSource').value;$('#wrapSym').hidden=s!=='binance';$('#wrapCsv').hidden=s!=='csv';
