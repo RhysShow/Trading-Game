@@ -2,12 +2,10 @@
 // 3+1 SOP 解答版：對應 index.html 遊戲裡的規則（5 分 K）
 //   1. 連招：同方向的 CH / BOS / FVG / OB 出現 3 種以上（反向 FVG 忽略；反向 CH/BOS/OB 重置）
 //      BOS 必須收在「CH 之後的最高點（做空：最低點）」之外才算有效
-//   2. 回踩：價格碰到最近的同向 OB（OB1），OB2 為防守位
-//   3. 進場：碰 OB 後 3 根內出現吞噬 K 棒收線
-//        - 實體 >= 0.5 ATR，做多收在前一根高點之上（做空：低點之下）
-//        - 收盤價站上前 N 根各自的實體中點（做空：跌破）
-//        - （選用）碰到 OB1 且收在 OB 之外
-//   4. 停損：OB2 外側（沒有 OB2 用 OB1）；停利：R 倍風險
+//   2. 回踩：連招成立後，第一根碰到最近同向 OB（OB1）的 K 棒 = 第 1 根，之後算到第 3 根
+//   3. 確認：第 3 根收盤同時越過 OB 外緣（多：上緣之上；空：下緣之下）
+//           且越過第 1 根實體的中點，收線進場（可調成第 2 根起）
+//   4. 停損：由成立位置往下（空：往上）找兩個同向 OB，放在第 2 個 OB 的完整影線之外；停利：R 倍風險
 strategy("3+1 SOP 解答版", overlay=true, initial_capital=10000,
      default_qty_type=strategy.cash, default_qty_value=1000,
      commission_type=strategy.commission.percent, commission_value=0.05,
@@ -15,8 +13,9 @@ strategy("3+1 SOP 解答版", overlay=true, initial_capital=10000,
      max_bars_back=500, max_labels_count=500, max_lines_count=500)
 
 rr       = input.float(1.0, "停利 R（0 = 不設停利）", minval=0.0, step=0.5)
-bodyN    = input.int(3, "進場價須站上前 N 根的實體中點", minval=1, maxval=6)
-rejectOb = input.bool(true, "進場 K 棒須碰到 OB1 並收在 OB 之外")
+confirmFrom = input.int(3, "回踩確認最早在第幾根（第 1 根 = 首次碰到 OB1）", minval=1, maxval=3)
+needOb2  = input.bool(true, "必須找到兩個 OB 才算標準進場（停損放第 2 個）")
+engulfExtra = input.bool(false, "額外要求大實體並突破前一根高點／低點（舊版吞噬條件）")
 showLbl  = input.bool(true, "顯示進場標籤與 SL / TP 線")
 showEv   = input.bool(true, "顯示 CH / BOS 標記")
 
@@ -45,7 +44,10 @@ var bool hBOS = false
 var bool hFVG = false
 var bool hOB = false
 var bool cUsed = false
-var int  cTouch = -1
+var int  cFirst = -1
+var float zHi = na
+var float zLo = na
+var float firstMid = na
 var int  cArmed = -1
 var int  sigCount = 0
 
@@ -62,24 +64,14 @@ bool evBOSs = false
 bool evBOSbBad = false
 bool evBOSsBad = false
 
-// ---------- 吞噬進場條件 ----------
-f_engulf(int d, float obHiV, float obLoV) =>
-    bool ok = bar_index >= bodyN and not na(atrv) and math.abs(close - open) >= 0.5 * atrv
+// ---------- 選用：舊版吞噬條件（大實體並突破前一根高點／低點） ----------
+f_engulf(int d) =>
+    bool ok = bar_index >= 1 and not na(atrv) and math.abs(close - open) >= 0.5 * atrv
     if ok
         if d == 1
             ok := close > open and close > high[1]
         else
             ok := close < open and close < low[1]
-    if ok
-        for m = 1 to bodyN
-            float mid = (open[m] + close[m]) / 2
-            if (d == 1 and close <= mid) or (d == -1 and close >= mid)
-                ok := false
-    if ok and rejectOb
-        if d == 1
-            ok := low <= obHiV and close > obHiV
-        else
-            ok := high >= obLoV and close < obLoV
     ok
 
 // ---------- 1. 擺動高低點（左右各 3 根，延遲 3 根確認） ----------
@@ -221,7 +213,7 @@ if nSig > 0
                 hOB := true
             if cUsed and (sty == 1 or sty == 2)
                 cUsed := false
-                cTouch := -1
+                cFirst := -1
                 cArmed := -1
         else if sty == 3 and cDir != 0
             cDir := cDir   // 反向 FVG：忽略
@@ -232,7 +224,7 @@ if nSig > 0
             hFVG := sty == 3
             hOB := sty == 4
             cUsed := false
-            cTouch := -1
+            cFirst := -1
             cArmed := -1
 
 int cnt = (hCH ? 1 : 0) + (hBOS ? 1 : 0) + (hFVG ? 1 : 0) + (hOB ? 1 : 0)
@@ -240,46 +232,72 @@ bool armed = cDir != 0 and cnt >= 3 and not cUsed
 if armed and cArmed < 0
     cArmed := bar_index
 
-// ---------- 6. 回踩 OB1 → 吞噬進場 ----------
+// ---------- 6. 回踩 OB1 → 第 3 根收線確認 ----------
 bool goSig = false
 float slP = na
 float tpP = na
 if armed
-    int o1 = -1
-    int o2 = -1
-    float k1 = na
-    float k2 = na
-    int nO = array.size(obDir)
-    if nO > 0
-        for i = 0 to nO - 1
-            if array.get(obDir, i) == cDir
-                float h = array.get(obHi, i)
-                float l = array.get(obLo, i)
-                bool sideOk = cDir == 1 ? l < close : h > close
-                if sideOk
-                    float key = cDir == 1 ? h : -l
-                    if o1 == -1 or key > k1
-                        o2 := o1
-                        k2 := k1
-                        o1 := i
-                        k1 := key
-                    else if o2 == -1 or key > k2
-                        o2 := i
-                        k2 := key
-    if o1 != -1
-        float ob1Hi = array.get(obHi, o1)
-        float ob1Lo = array.get(obLo, o1)
-        if (cDir == 1 and low <= ob1Hi) or (cDir == -1 and high >= ob1Lo)
-            cTouch := bar_index
-        if cTouch >= 0 and bar_index - cTouch <= 3 and f_engulf(cDir, ob1Hi, ob1Lo)
-            int ref = o2 != -1 ? o2 : o1
-            float sl = cDir == 1 ? array.get(obLo, ref) : array.get(obHi, ref)
-            float risk = (close - sl) * cDir
-            if risk > 0
-                goSig := true
-                slP := sl
-                tpP := rr > 0 ? close + cDir * risk * rr : na
-                cUsed := true
+    // 視窗過期（超過 3 根）或收盤穿越 OB 遠端邊界 → 重新等下一次碰到
+    if cFirst >= 0
+        bool expired = bar_index - cFirst > 2
+        bool breached = cDir == 1 ? close < zLo : close > zHi
+        if expired or breached
+            cFirst := -1
+    // 尚未開始：找最近的同向 OB（OB1），第一次碰到的那根就是「第 1 根」
+    if cFirst < 0
+        int o1 = -1
+        float k1 = na
+        int nO = array.size(obDir)
+        if nO > 0
+            for i = 0 to nO - 1
+                if array.get(obDir, i) == cDir
+                    float h = array.get(obHi, i)
+                    float l = array.get(obLo, i)
+                    bool sideOk = cDir == 1 ? l < close : h > close
+                    if sideOk
+                        float key = cDir == 1 ? h : -l
+                        if o1 == -1 or key > k1
+                            o1 := i
+                            k1 := key
+        if o1 != -1
+            float b1Hi = array.get(obHi, o1)
+            float b1Lo = array.get(obLo, o1)
+            if (cDir == 1 and low <= b1Hi) or (cDir == -1 and high >= b1Lo)
+                cFirst := bar_index
+                zHi := b1Hi
+                zLo := b1Lo
+                firstMid := (open + close) / 2
+    // 確認：收盤同時越過 OB 外緣與第 1 根實體中點
+    if cFirst >= 0 and bar_index - cFirst >= confirmFrom - 1
+        bool conf = cDir == 1 ? (close > zHi and close > firstMid) : (close < zLo and close < firstMid)
+        if conf and engulfExtra
+            conf := f_engulf(cDir)
+        if conf
+            // 第 2 個 OB：比第 1 個更遠的、最近的同向 OB
+            int o2 = -1
+            float k2 = na
+            float zKey = cDir == 1 ? zHi : -zLo
+            int nO2 = array.size(obDir)
+            if nO2 > 0
+                for i = 0 to nO2 - 1
+                    if array.get(obDir, i) == cDir
+                        float h2 = array.get(obHi, i)
+                        float l2 = array.get(obLo, i)
+                        bool sideOk2 = cDir == 1 ? l2 < close : h2 > close
+                        if sideOk2
+                            float key2 = cDir == 1 ? h2 : -l2
+                            if key2 < zKey and (o2 == -1 or key2 > k2)
+                                o2 := i
+                                k2 := key2
+            if not (needOb2 and o2 == -1)
+                float sl = o2 != -1 ? (cDir == 1 ? array.get(obLo, o2) : array.get(obHi, o2)) : (cDir == 1 ? zLo : zHi)
+                float risk = (close - sl) * cDir
+                if risk > 0
+                    goSig := true
+                    slP := sl
+                    tpP := rr > 0 ? close + cDir * risk * rr : na
+                    cUsed := true
+                    cFirst := -1
 
 if goSig
     sigCount += 1
