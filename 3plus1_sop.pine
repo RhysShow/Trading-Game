@@ -97,7 +97,7 @@ if isL
 // ---------- 2. OB 失效（收盤穿越遠端邊界） ----------
 int nOb = array.size(obDir)
 if nOb > 0
-    for i = nOb - 1 to 0 by -1
+    for i = nOb - 1 to 0
         int d0 = array.get(obDir, i)
         if (d0 == 1 and close < array.get(obLo, i)) or (d0 == -1 and close > array.get(obHi, i))
             array.remove(obDir, i)
@@ -132,7 +132,7 @@ if not na(lastHp) and not lastHbroken and close > lastHp
     int jOff = span
     float minL = low[span]
     if span > 0
-        for off = span - 1 to 0 by -1
+        for off = span - 1 to 0
             if low[off] < minL
                 minL := low[off]
                 jOff := off
@@ -171,7 +171,7 @@ if not na(lastLp) and not lastLbroken and close < lastLp
     int jOffS = spanS
     float maxH = high[spanS]
     if spanS > 0
-        for off = spanS - 1 to 0 by -1
+        for off = spanS - 1 to 0
             if high[off] > maxH
                 maxH := high[off]
                 jOffS := off
