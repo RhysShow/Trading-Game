@@ -115,6 +115,8 @@ tr.click{cursor:pointer}tr.click:hover,tr.sel{background:var(--panel2)}tr.sel td
           <select id="cMode"><option value="sop">3+1 課程 SOP（停損＝第二個 OB 外側）</option><option value="free">自由模式</option></select>
         </label>
         <label class="f">停利風報比 R（課程：1 或 1.5；0 = 不設）<input type="number" id="cRR" min="0" step="0.5"></label>
+        <label class="f">進場價須站上前幾根的實體中點<input type="number" id="cBodyN" min="1" max="6"></label>
+        <label class="chk" style="align-self:end"><input type="checkbox" id="cRej"> 進場 K 棒須碰到 OB1 並收在 OB 之外</label>
         <label class="f" id="wrapSlMode">自動停損停利（自由模式）
           <select id="cSlMode"><option value="off">關閉（全由我決定）</option><option value="atr">開啟（ATR 倍數）</option></select>
         </label>
@@ -224,7 +226,7 @@ const DB={
   save(d){try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}}
 };
 const SYMS=['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','DOGEUSDT','ADAUSDT','AVAXUSDT','LINKUSDT','LTCUSDT'];
-const DEF={source:'binance',sym:'RANDOM',hist:150,play:500,view:90,unit:1000,maxU:5,fee:0.05,mode:'sop',slMode:'off',slK:1.5,rr:1,blind:true,hint:false,
+const DEF={source:'binance',sym:'RANDOM',hist:150,play:500,view:90,unit:1000,maxU:5,fee:0.05,mode:'sop',slMode:'off',slK:1.5,rr:1,bodyN:3,rejectOb:true,blind:true,hint:false,
   layers:{struct:true,ob:true,fvg:true,liq:false,pd:false,swing:false}};
 let cfg=(()=>{try{return Object.assign({},DEF,JSON.parse(localStorage.getItem(CKEY))||{},{})}catch(e){return{...DEF}}})();
 cfg.layers=Object.assign({},DEF.layers,cfg.layers||{});
@@ -411,11 +413,18 @@ function contextAt(an,cs,k,dir){
    3. 吞噬：OB 內出現大陽線收在前一根高點之上（做空：大陰線收在前一根低點之下）才進場
    4. 停損：OB2 外側（沒有 OB2 時用 OB1 外側）；停利：rr 倍風險
    每根 K 棒的狀態只用到該根收盤為止的資訊。 */
-function isEngulf(cs,k,d,atr){
-  if(k<2)return false;const c=cs[k],p=cs[k-1],q=cs[k-2],body=Math.abs(c.c-c.o);
+function isEngulf(cs,k,d,atr,ob){
+  const n=cfg.bodyN||3;
+  if(k<n)return false;const c=cs[k],p=cs[k-1],body=Math.abs(c.c-c.o);
   if(body<0.5*atr[k])return false;
-  const m1=(p.o+p.c)/2,m2=(q.o+q.c)/2;   // 前兩根實體中點：進場價必須站上（做空：跌破）
-  return d===1?(c.c>c.o&&c.c>p.h&&c.c>m1&&c.c>m2):(c.c<c.o&&c.c<p.l&&c.c<m1&&c.c<m2);
+  if(d===1?!(c.c>c.o&&c.c>p.h):!(c.c<c.o&&c.c<p.l))return false;
+  // 前 n 根各自的實體中點：進場價必須全部站上（做空：全部跌破）
+  for(let m=1;m<=n;m++){const mid=(cs[k-m].o+cs[k-m].c)/2;if(d===1?c.c<=mid:c.c>=mid)return false}
+  // 從 OB 冒出頭：這根碰到 OB1，且收盤收在 OB 之外（多：OB 上緣之上；空：OB 下緣之下）
+  if(cfg.rejectOb&&ob){
+    if(d===1?!(c.l<=ob.hi&&c.c>ob.hi):!(c.h>=ob.lo&&c.c<ob.lo))return false;
+  }
+  return true;
 }
 function sopObs(an,cs,k,d){
   const c=cs[k];
@@ -450,7 +459,7 @@ function sopRun(an,cs,rr){
       if(ob1&&(d===1?c.l<=ob1.hi:c.h>=ob1.lo))ch.touchAt=k;
       if(ch.touchAt>=0&&k-ch.touchAt<=3){
         phase='touched';
-        if(ob1&&isEngulf(cs,k,d,an.atr)){
+        if(ob1&&isEngulf(cs,k,d,an.atr,ob1)){
           const ref=ob2||ob1,sl=d===1?ref.lo:ref.hi,risk=(c.c-sl)*d;
           if(risk>0){
             signal={k,dir:d,entry:c.c,sl,tp:rr>0?c.c+d*risk*rr:null,hasOb2:!!ob2,ob1,ob2,armedAt:ch.armedAt,touchAt:ch.touchAt};
@@ -478,7 +487,7 @@ function sopCheck(sop,an,cs,k,d){
   const s=sop.st[k];
   const chain=s.dir===d&&s.types.length>=3;
   const pullback=chain&&s.touchAt>=0&&k-s.touchAt<=3;
-  const engulf=isEngulf(cs,k,d,an.atr);
+  const engulf=isEngulf(cs,k,d,an.atr,s.ob1);
   const exact=!!(s.signal&&s.signal.dir===d);
   const tags=[];
   if(exact)tags.push('符合SOP');
@@ -880,7 +889,7 @@ function renderHint(){
   if(['armed','touched','signal'].includes(s.phase))h+=`<span>OB1 進場區</span><span>${z(s.ob1)}</span><span>OB2 防守</span><span>${z(s.ob2)}</span>`;
   if(s.signal)h+=`<span>進場</span><span class="${dc}">${fmtP(s.signal.entry)}</span><span>SL / TP</span><span>${fmtP(s.signal.sl)} / ${fmtP(s.signal.tp)}</span>`;
   if(cancel&&S.cur-cancel.k<=20)h+=`<span>最近取消</span><span class="dn">反向 ${cancel.by}，${S.cur-cancel.k} 根前</span>`;
-  box.innerHTML=h+`</div><div class="mut" style="font-size:11px;margin-top:6px">SOP：同向 3 條件（BOS 須收在 CH 之後的最高點／最低點之外）→ 回踩 OB1 → 吞噬收線進場（進場價須站上前兩根實體中點）；停損 OB2 外側，停利 ${cfg.rr}R。反向 CH 出現就放棄。</div>`;
+  box.innerHTML=h+`</div><div class="mut" style="font-size:11px;margin-top:6px">SOP：同向 3 條件（BOS 須收在 CH 之後的最高點／最低點之外）→ 回踩 OB1 → 吞噬收線進場（進場價須站上前 ${cfg.bodyN} 根實體中點${cfg.rejectOb?'，且收在 OB 之外':''}）；停損 OB2 外側，停利 ${cfg.rr}R。反向 CH 出現就放棄。</div>`;
 }
 const GOOD=/符合SOP|連招成立|回踩OB|吞噬確認/,BAD=/追價|無連招|逆連招|停損用/;
 function tagHtml(tags){return tags.map(t=>`<span class="tag ${GOOD.test(t)?'g':BAD.test(t)?'r':''}">${t}</span>`).join('')}
@@ -983,7 +992,7 @@ function renderStats(){
 /* ============================== 事件 ============================== */
 function cfgToForm(){
   $('#cSource').value=cfg.source;$('#cSym').value=cfg.sym;$('#cHist').value=cfg.hist;$('#cPlay').value=cfg.play;
-  $('#cUnit').value=cfg.unit;$('#cMaxU').value=cfg.maxU;$('#cFee').value=cfg.fee;$('#cSlMode').value=cfg.slMode;$('#cMode').value=cfg.mode;$('#cSlK').value=cfg.slK;$('#cRR').value=cfg.rr;
+  $('#cUnit').value=cfg.unit;$('#cMaxU').value=cfg.maxU;$('#cFee').value=cfg.fee;$('#cSlMode').value=cfg.slMode;$('#cMode').value=cfg.mode;$('#cSlK').value=cfg.slK;$('#cRR').value=cfg.rr;$('#cBodyN').value=cfg.bodyN;$('#cRej').checked=cfg.rejectOb;
   $('#cBlind').checked=cfg.blind;$('#cHint').checked=cfg.hint;
   $$('[data-layer]').forEach(e=>e.checked=!!cfg.layers[e.dataset.layer]);
   syncSource();
@@ -994,7 +1003,7 @@ function formToCfg(){
   cfg.hist=Math.round(n('#cHist',150,50,400));cfg.play=Math.round(n('#cPlay',500,50,900));
   if(cfg.hist+cfg.play>1000)cfg.play=1000-cfg.hist;
   cfg.unit=n('#cUnit',1000,100,1e6);cfg.maxU=Math.round(n('#cMaxU',5,1,20));cfg.fee=n('#cFee',0.05,0,2);
-  cfg.mode=$('#cMode').value;cfg.slMode=$('#cSlMode').value;cfg.slK=n('#cSlK',1.5,0.3,20);cfg.rr=n('#cRR',1,0,20);cfg.blind=$('#cBlind').checked;saveCfg();
+  cfg.mode=$('#cMode').value;cfg.slMode=$('#cSlMode').value;cfg.slK=n('#cSlK',1.5,0.3,20);cfg.rr=n('#cRR',1,0,20);cfg.bodyN=Math.round(n('#cBodyN',3,1,6));cfg.rejectOb=$('#cRej').checked;cfg.blind=$('#cBlind').checked;saveCfg();
 }
 function syncSource(){
   const s=$('#cSource').value;$('#wrapSym').hidden=s!=='binance';$('#wrapCsv').hidden=s!=='csv';
