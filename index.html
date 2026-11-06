@@ -102,6 +102,7 @@ tr.click{cursor:pointer}tr.click:hover,tr.sel{background:var(--panel2)}tr.sel td
           <input type="file" id="cCsv" accept=".csv,.txt">
         </label>
         <label class="f">起始已知 K 棒數（背景）<input type="number" id="cHist" min="50" max="400" step="10"></label>
+        <label class="f">高週期 K 棒週期（分鐘，逗號分隔，最多 3 個；右側面板）<input type="text" id="cHtf" placeholder="15,60,240"></label>
         <label class="f">訓練 K 棒數（最多 900）<input type="number" id="cPlay" min="50" max="900" step="50"></label>
       </div>
     </div>
@@ -179,6 +180,7 @@ tr.click{cursor:pointer}tr.click:hover,tr.sel{background:var(--panel2)}tr.sel td
               <label class="chk"><input type="checkbox" data-layer="liq"> 流動性 / 掃蕩</label>
               <label class="chk"><input type="checkbox" data-layer="pd"> 溢價 / 折價</label>
               <label class="chk"><input type="checkbox" data-layer="swing"> 擺動高低點</label>
+              <label class="chk"><input type="checkbox" data-layer="htf"> 高週期 K 棒（右側）</label>
             </div>
             <label class="chk" style="margin-top:8px"><input type="checkbox" id="cHint"> 顯示 SOP 提示（連招狀態、OB1/OB2，練習初期用）</label>
             <div id="hintBox" style="margin-top:8px" hidden></div>
@@ -231,7 +233,7 @@ const DB={
 };
 const SYMS=['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','DOGEUSDT','ADAUSDT','AVAXUSDT','LINKUSDT','LTCUSDT'];
 const DEF={source:'binance',sym:'RANDOM',hist:150,play:500,view:90,unit:1000,maxU:5,fee:0.05,mode:'sop',slMode:'off',slK:1.5,rr:1,confirmFrom:2,needOb2:false,fvgZone:true,engulfExtra:false,ver:2,blind:true,hint:false,
-  layers:{struct:true,ob:true,fvg:true,liq:false,pd:false,swing:false}};
+  htf:'15,60,240',layers:{struct:true,ob:true,fvg:true,liq:false,pd:false,swing:false,htf:true}};
 let cfg=(()=>{
   try{
     const saved=JSON.parse(localStorage.getItem(CKEY))||{},c=Object.assign({},DEF,saved);
@@ -522,13 +524,57 @@ function sopCheck(sop,an,cs,k,d){
 /* ============================== 圖表 ============================== */
 const COL={up:'#26a69a',dn:'#ef5350',ob:'#2962ff',obTxt:'#6f93ff',grid:'#1b2430',txt:'#8493a5',bg:'#0d1117'};
 let hover=null,lastGeom=null;
+/* ---------- 高週期（HTF）K 棒：用 5 分 K 即時合成，只用到目前為止的資料 ---------- */
+const HTF_N=4,HTF_CW=7,HTF_GAP=3,HTF_GG=12,HTF_GW=HTF_N*HTF_CW+(HTF_N-1)*HTF_GAP;
+function parseHtf(str){return String(str||'').split(/[,\s，]+/).map(Number).filter(n=>n>=10&&n<=1440&&isFinite(n)).slice(0,3)}
+function tfName(m){return m%1440===0?(m/1440)+'D':m%60===0?(m/60)+'H':m+'m'}
+function htfPanelW(count){return 10+count*HTF_GW+(count-1)*HTF_GG+10}
+function fmtCd(ms){const t=Math.max(0,Math.round(ms/1000)),h=Math.floor(t/3600),m=Math.floor(t%3600/60),sc=t%60,p=x=>String(x).padStart(2,'0');return h?`${h}:${p(m)}:${p(sc)}`:`${p(m)}:${p(sc)}`}
+function htfCandles(cs,k,tfMin,n){
+  const ms=tfMin*60000,out=[];let i=k;
+  while(i>=0&&out.length<n){
+    const key=Math.floor(cs[i].t/ms);let h=-Infinity,l=Infinity,o=cs[i].o,j=i;
+    while(j>=0&&Math.floor(cs[j].t/ms)===key){h=Math.max(h,cs[j].h);l=Math.min(l,cs[j].l);o=cs[j].o;j--}
+    out.unshift({o,h,l,c:cs[i].c,key});i=j;
+  }
+  return out;
+}
+function drawHtfPanel(g,o,x0,top,bottom){
+  const W=htfPanelW(o.htf.length);
+  g.save();
+  g.fillStyle='rgba(130,150,180,.06)';g.fillRect(x0,top-22,W,bottom-top+22);
+  g.strokeStyle=COL.grid;g.beginPath();g.moveTo(x0+.5,top-22);g.lineTo(x0+.5,bottom);g.stroke();
+  let x=x0+10;g.textBaseline='middle';
+  for(const tf of o.htf){
+    const cs4=htfCandles(o.cs,o.cur,tf,HTF_N);
+    if(cs4.length){
+      const hi0=Math.max(...cs4.map(c=>c.h)),lo0=Math.min(...cs4.map(c=>c.l)),pad=(hi0-lo0)*0.08||hi0*0.001;
+      const ty=top+30,by=bottom-8,y=p=>ty+(hi0+pad-p)/((hi0-lo0)+2*pad)*(by-ty);
+      const last=cs4[cs4.length-1],up=last.c>=last.o,rem=(last.key+1)*tf*60000-(o.cs[o.cur].t+BAR);
+      g.textAlign='left';g.font='bold 11px system-ui,sans-serif';g.fillStyle=up?COL.up:COL.dn;g.fillText(tfName(tf)+(up?' ▲':' ▼'),x,top-12);
+      g.font='10px system-ui,sans-serif';g.fillStyle=COL.txt;g.fillText(fmtCd(rem),x,top+2);
+      cs4.forEach((c,idx)=>{
+        const slot=HTF_N-cs4.length+idx,cx=x+slot*(HTF_CW+HTF_GAP),mid=cx+HTF_CW/2,col=c.c>=c.o?COL.up:COL.dn,forming=idx===cs4.length-1;
+        g.strokeStyle=col;g.fillStyle=col;g.lineWidth=1;
+        g.beginPath();g.moveTo(Math.round(mid)+.5,y(c.h));g.lineTo(Math.round(mid)+.5,y(c.l));g.stroke();
+        const yo=y(c.o),yc=y(c.c),bt=Math.min(yo,yc),bh=Math.max(1.5,Math.abs(yo-yc));
+        if(forming){g.globalAlpha=.3;g.fillRect(cx,bt,HTF_CW,bh);g.globalAlpha=1;g.strokeRect(cx+.5,bt+.5,HTF_CW-1,Math.max(1,bh-1))}
+        else g.fillRect(cx,bt,HTF_CW,bh);
+      });
+      const yl=y(last.c);g.strokeStyle='rgba(180,190,205,.5)';g.setLineDash([2,3]);g.beginPath();g.moveTo(x-4,yl);g.lineTo(x+HTF_GW+4,yl);g.stroke();g.setLineDash([]);
+    }
+    x+=HTF_GW+HTF_GG;
+  }
+  g.restore();
+}
 function drawChart(cv,o){
   const dpr=window.devicePixelRatio||1,W=cv.clientWidth,Hh=cv.clientHeight;
   if(cv.width!==Math.round(W*dpr)||cv.height!==Math.round(Hh*dpr)){cv.width=Math.round(W*dpr);cv.height=Math.round(Hh*dpr)}
   const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);
   g.fillStyle=COL.bg;g.fillRect(0,0,W,Hh);
   const {cs,an,cur,end,viewN,layers}=o;
-  const axisW=66,plotR=W-axisW,plotT=26,plotB=Hh-20;
+  const axisW=66,axisX=W-axisW,plotT=26,plotB=Hh-20;
+  const showHtf=!!(o.htf&&o.htf.length&&W>=520),panelW=showHtf?htfPanelW(o.htf.length):0,plotR=axisX-panelW;
   const volH=(plotB-plotT)*0.13,priceB=plotB-volH-4;
   const first=end-viewN+1,slots=viewN+6,bw=plotR/slots;
   const xi=i=>(i-first+0.5)*bw;
@@ -544,7 +590,7 @@ function drawChart(cv,o){
   g.lineWidth=1;
   for(let p=Math.ceil(lo/step)*step;p<hi;p+=step){
     const y=Math.round(yp(p))+.5;g.strokeStyle=COL.grid;g.beginPath();g.moveTo(0,y);g.lineTo(plotR,y);g.stroke();
-    g.fillStyle=COL.txt;g.textAlign='left';g.fillText(fmtP(p),plotR+6,y);
+    g.fillStyle=COL.txt;g.textAlign='left';g.fillText(fmtP(p),axisX+6,y);
   }
   // 時間軸
   g.textAlign='center';g.fillStyle=COL.txt;
@@ -739,9 +785,10 @@ function drawChart(cv,o){
     g.beginPath();g.moveTo(0,y);g.lineTo(plotR,y);g.stroke();g.setLineDash([]);g.globalAlpha=1;
   }
   g.restore();
+  if(showHtf)drawHtfPanel(g,o,plotR,plotT+22,priceB);
   if(cur<=end){
-    const c=cs[cur],y=yp(c.c);g.fillStyle=c.c>=c.o?COL.up:COL.dn;g.fillRect(plotR,y-9,axisW,18);
-    g.fillStyle='#fff';g.textAlign='left';g.fillText(fmtP(c.c),plotR+5,y);
+    const c=cs[cur],y=yp(c.c);g.fillStyle=c.c>=c.o?COL.up:COL.dn;g.fillRect(axisX,y-9,axisW,18);
+    g.fillStyle='#fff';g.textAlign='left';g.fillText(fmtP(c.c),axisX+5,y);
   }
   // 十字線
   let hi_i=null;
@@ -750,7 +797,7 @@ function drawChart(cv,o){
     g.strokeStyle='rgba(180,190,205,.4)';g.setLineDash([3,3]);
     g.beginPath();g.moveTo(hover.x,plotT);g.lineTo(hover.x,priceB);g.moveTo(0,hover.y);g.lineTo(plotR,hover.y);g.stroke();g.setLineDash([]);
     const pr=hi-(hover.y-plotT)/(priceB-plotT)*(hi-lo);
-    g.fillStyle='#2a3647';g.fillRect(plotR,hover.y-9,axisW,18);g.fillStyle='#fff';g.textAlign='left';g.fillText(fmtP(pr),plotR+5,hover.y);
+    g.fillStyle='#2a3647';g.fillRect(axisX,hover.y-9,axisW,18);g.fillStyle='#fff';g.textAlign='left';g.fillText(fmtP(pr),axisX+5,hover.y);
   }
   const lab=$('#ohlc');
   const hc=(hi_i!=null&&hi_i>=0&&hi_i<=end)?cs[hi_i]:cs[Math.min(cur,end)];
@@ -862,13 +909,14 @@ function endSession(){
 
 /* ============================== 繪製 / UI ============================== */
 function chartOpts(){
+  const htf=cfg.layers.htf?parseHtf(cfg.htf):null;
   const blind=cfg.blind&&!S.over;
   const timeLabel=(i,full)=>blind?`${i-(S.hist-1)>=0?'+':''}${i-(S.hist-1)}`+(full?' 根':''):(full?fmtT(S.cs[i].t):(()=>{const d=new Date(S.cs[i].t);return d.getHours()===0&&d.getMinutes()<30?`${d.getMonth()+1}/${d.getDate()}`:`${pad2(d.getHours())}:${pad2(d.getMinutes())}`})());
   const st=S.sop.st[S.over?S.rv.cur:S.cur];
   const sopObs=cfg.hint&&st.phase!=='none'&&st.phase!=='building'&&st.phase!=='used'?{ob1:st.ob1,ob2:st.ob2}:null;
-  if(!S.over)return{cs:S.cs,an:S.an,cur:S.cur,end:S.cur,viewN:cfg.view,layers:cfg.layers,pos:S.pos,fills:S.fills,timeLabel,sopObs};
+  if(!S.over)return{cs:S.cs,an:S.an,cur:S.cur,end:S.cur,viewN:cfg.view,layers:cfg.layers,pos:S.pos,fills:S.fills,timeLabel,sopObs,htf};
   const rv=S.rv,end=rv.future?Math.min(S.N-1,rv.cur+Math.round(cfg.view*0.4)):rv.cur;
-  return{cs:S.cs,an:S.an,cur:rv.cur,end,viewN:cfg.view,layers:cfg.layers,pos:null,fills:S.fills,timeLabel,sopObs,
+  return{cs:S.cs,an:S.an,cur:rv.cur,end,viewN:cfg.view,layers:cfg.layers,pos:null,fills:S.fills,timeLabel,sopObs,htf,
     best:rv.best?S.best:null,signals:rv.sig?S.sigList:null,focus:rv.sig?S.sigList[rv.focus]:null,tradeLines:S.trades};
 }
 function redraw(){if(S)drawChart($('#cv'),chartOpts())}
@@ -1018,7 +1066,7 @@ function renderStats(){
 
 /* ============================== 事件 ============================== */
 function cfgToForm(){
-  $('#cSource').value=cfg.source;$('#cSym').value=cfg.sym;$('#cHist').value=cfg.hist;$('#cPlay').value=cfg.play;
+  $('#cSource').value=cfg.source;$('#cSym').value=cfg.sym;$('#cHist').value=cfg.hist;$('#cHtf').value=cfg.htf;$('#cPlay').value=cfg.play;
   $('#cUnit').value=cfg.unit;$('#cMaxU').value=cfg.maxU;$('#cFee').value=cfg.fee;$('#cSlMode').value=cfg.slMode;$('#cMode').value=cfg.mode;$('#cSlK').value=cfg.slK;$('#cRR').value=cfg.rr;$('#cConf').value=cfg.confirmFrom;$('#cOb2').checked=cfg.needOb2;$('#cFvg').checked=cfg.fvgZone;$('#cEng').checked=cfg.engulfExtra;
   $('#cBlind').checked=cfg.blind;$('#cHint').checked=cfg.hint;
   $$('[data-layer]').forEach(e=>e.checked=!!cfg.layers[e.dataset.layer]);
@@ -1027,7 +1075,7 @@ function cfgToForm(){
 function formToCfg(){
   const n=(id,d,lo,hi)=>{const v=parseFloat($(id).value);return isFinite(v)?Math.min(hi,Math.max(lo,v)):d};
   cfg.source=$('#cSource').value;cfg.sym=$('#cSym').value;
-  cfg.hist=Math.round(n('#cHist',150,50,400));cfg.play=Math.round(n('#cPlay',500,50,900));
+  cfg.htf=parseHtf($('#cHtf').value).join(',')||'15,60,240';cfg.hist=Math.round(n('#cHist',150,50,400));cfg.play=Math.round(n('#cPlay',500,50,900));
   if(cfg.hist+cfg.play>1000)cfg.play=1000-cfg.hist;
   cfg.unit=n('#cUnit',1000,100,1e6);cfg.maxU=Math.round(n('#cMaxU',5,1,20));cfg.fee=n('#cFee',0.05,0,2);
   cfg.mode=$('#cMode').value;cfg.slMode=$('#cSlMode').value;cfg.slK=n('#cSlK',1.5,0.3,20);cfg.rr=n('#cRR',1,0,20);cfg.confirmFrom=+$('#cConf').value;cfg.needOb2=$('#cOb2').checked;cfg.fvgZone=$('#cFvg').checked;cfg.ver=2;cfg.engulfExtra=$('#cEng').checked;cfg.blind=$('#cBlind').checked;saveCfg();
