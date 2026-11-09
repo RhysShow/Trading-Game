@@ -42,6 +42,7 @@ label.chk{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:non
 .acts button small{display:block;font-weight:400;font-size:11px;opacity:.8}
 #bBuy{background:#1f8f84}#bSell{background:#c8433f}#bWait{background:#46566b}
 .acts button:hover{filter:brightness(1.15)}
+.biasTb td,.biasTb th{padding:2px 6px;text-align:center;border-bottom:1px solid var(--line)}.biasTb .lamp{font-size:16px;line-height:1}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;font-size:13px}
 .kv span:nth-child(odd){color:var(--mut)}
 .kv span:nth-child(even){text-align:right;font-variant-numeric:tabular-nums}
@@ -130,6 +131,56 @@ tr.click{cursor:pointer}tr.click:hover,tr.sel{background:var(--panel2)}tr.sel td
       <p class="mut" style="margin:8px 0 0;font-size:12px">規則：成交在當前 K 棒收盤價。同方向再按＝加碼一單位；反方向＝全部平倉（再按一次才反手開單）。停損停利以後續 K 棒的高低點判定，同棒兩者皆觸及時以停損優先。SOP 模式下，開倉時自動把停損設在第二個同向 OB 外側（沒有第二個就用第一個），停利依上面的 R 設定。</p>
     </div>
     <div class="card">
+      <h3>結構與斐波那契（和 TradingView 解答版 v5 相同）</h3>
+      <div class="grid2">
+        <label class="f">Swing 結構長度（LuxAlgo 預設 50）<input type="number" id="cSwingLen" min="10" max="200"></label>
+        <label class="f">OB 失效判斷
+          <select id="cMitSrc"><option value="hl">影線碰到遠端邊界（LuxAlgo 預設）</option><option value="close">收盤穿越遠端邊界</option></select>
+        </label>
+        <label class="chk" style="align-self:end"><input type="checkbox" id="cUseFib"> 啟用斐波那契 OTE 模型（復盤與提示會顯示）</label>
+        <label class="f">畫斐波那契用的波段
+          <select id="cFibStruct"><option value="internal">內部結構（5 根）</option><option value="swing">Swing 結構</option></select>
+        </label>
+        <label class="chk" style="align-self:end"><input type="checkbox" id="cFibTrend"> 要求大方向（Swing 結構）與交易方向一致</label>
+        <label class="f">OTE 區起點（回撤比例）<input type="number" id="cOteHi" min="0.3" max="0.95" step="0.001"></label>
+        <label class="f">OTE 區終點（回撤比例）<input type="number" id="cOteLo" min="0.4" max="1" step="0.001"></label>
+        <label class="f">BOS K 棒實體至少幾倍 ATR（0 = 不限）<input type="number" id="cBosBody" min="0" step="0.25"></label>
+        <label class="f">FIB 停利（A→B 的倍數）
+          <select id="cFibExt"><option value="1.272">1.272</option><option value="1.414">1.414</option></select>
+        </label>
+        <label class="f">FIB 停損位置
+          <select id="cFibSl"><option value="A">A 點之外</option><option value="box">進場框之外</option></select>
+        </label>
+        <label class="f">BOS 後最多等幾根 K 棒回到進場框<input type="number" id="cFibExpire" min="5" max="300"></label>
+      </div>
+    </div>
+    <div class="card">
+      <h3>偏見與標準訊號</h3>
+      <div class="grid2">
+        <label class="chk" style="align-self:end"><input type="checkbox" id="cBiasFilter"> 只出現與指定週期偏見同方向的 3+1 訊號</label>
+        <label class="f">過濾用的週期
+          <select id="cBiasTf"><option value="1440">D</option><option value="240">4h</option><option value="60">1h</option><option value="30">30m</option><option value="15">15m</option></select>
+        </label>
+        <label class="f">持倉中又出現新的標準訊號時（復盤統計用）
+          <select id="cPosMode"><option value="hide">隱藏（維持原部位）</option><option value="gray">顯示為灰色（不進場）</option><option value="reverse">反向訊號：平倉並反手</option></select>
+        </label>
+      </div>
+    </div>
+    <div class="card">
+      <h3>分批進出（你自己的交易，需有停損）</h3>
+      <div class="grid2">
+        <label class="chk" style="align-self:end"><input type="checkbox" id="cLadder"> 分批止盈（到各 R 目標自動平倉一部分；停損不移動）</label>
+        <label class="f">各目標「R 倍數:平倉 %」，逗號分隔<input type="text" id="cLadderStr" placeholder="1:30,2:30,3:20,4:10,5:10"></label>
+        <label class="chk" style="align-self:end"><input type="checkbox" id="cScaleIn"> 分批進場（第 1 批收盤成交，第 2 批自動掛單等回踩）</label>
+        <label class="f">第 1 批比例 %<input type="number" id="cFirstPct" min="10" max="100" step="5"></label>
+        <label class="f">第 2 批掛單位置
+          <select id="cAddAt"><option value="half">回撤 0.5R</option><option value="ob1">OB1 中點</option></select>
+        </label>
+        <label class="f">第 2 批最多等幾根（碰到 R1 也會取消）<input type="number" id="cAddExpire" min="1" max="100"></label>
+      </div>
+      <p class="mut" style="margin:8px 0 0;font-size:12px">R = 第 1 批進場價到停損的距離，Rn 目標 = 第 1 批進場價 ± n × R。最後一個目標會平掉剩下的全部。</p>
+    </div>
+    <div class="card">
       <label class="chk"><input type="checkbox" id="cBlind"> 盲測模式（訓練中隱藏幣種與日期，結束後揭曉）</label>
       <div style="margin-top:12px"><button class="btn primary" id="btnStart">開始訓練</button></div>
       <div id="setupMsg" class="mut" style="margin-top:8px;font-size:12px"></div>
@@ -154,13 +205,14 @@ tr.click{cursor:pointer}tr.click:hover,tr.sel{background:var(--panel2)}tr.sel td
           <button class="btn sm" data-step="1">1 ›</button>
           <button class="btn sm" data-step="10">10 »</button>
           <label class="chk"><input type="checkbox" id="rvFuture" checked> 顯示後續走勢</label>
-          <label class="chk"><input type="checkbox" id="rvSig" checked> SOP 標準訊號與結果</label>
+          <label class="chk"><input type="checkbox" id="rvSig" checked> 標準訊號與結果</label>
           <label class="chk"><input type="checkbox" id="rvWin" checked> 只看賺錢的進場點</label>
           <label class="chk"><input type="checkbox" id="rvBest"> 事後最佳多空段</label>
           <span id="rvTime" class="mut"></span>
         </div>
       </div>
       <aside>
+        <div class="card" id="biasCard"><h3>偏見燈號</h3><table class="biasTb" id="biasTb"></table></div>
         <div id="playPanel">
           <div class="card">
             <div class="acts">
@@ -181,6 +233,7 @@ tr.click{cursor:pointer}tr.click:hover,tr.sel{background:var(--panel2)}tr.sel td
               <label class="chk"><input type="checkbox" data-layer="pd"> 溢價 / 折價</label>
               <label class="chk"><input type="checkbox" data-layer="swing"> 擺動高低點</label>
               <label class="chk"><input type="checkbox" data-layer="htf"> 高週期 K 棒（右側）</label>
+              <label class="chk"><input type="checkbox" data-layer="bias"> 偏見燈號</label>
             </div>
             <label class="chk" style="margin-top:8px"><input type="checkbox" id="cHint"> 顯示 SOP 提示（連招狀態、OB1/OB2，練習初期用）</label>
             <div id="hintBox" style="margin-top:8px" hidden></div>
@@ -193,7 +246,7 @@ tr.click{cursor:pointer}tr.click:hover,tr.sel{background:var(--panel2)}tr.sel td
         </div>
         <div id="sumPanel" hidden>
           <div class="card"><h3>本局結果</h3><div id="sumStats"></div></div>
-          <div class="card"><h3>SOP 進場點 <span id="sigCount"></span>（點選跳到該處，鍵盤 N / P 切換）</h3><div style="overflow:auto"><table id="sigTable"></table></div></div>
+          <div class="card"><h3>標準進場點（3+1／FIB） <span id="sigCount"></span>（點選跳到該處，鍵盤 N / P 切換）</h3><div style="overflow:auto"><table id="sigTable"></table></div></div>
           <div class="card"><h3>本局交易（點選可跳到進場處）</h3><div style="overflow:auto"><table id="sumTable"></table></div></div>
           <div class="card">
             <button class="btn primary" id="btnNext">再來一局</button>
@@ -233,7 +286,9 @@ const DB={
 };
 const SYMS=['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','DOGEUSDT','ADAUSDT','AVAXUSDT','LINKUSDT','LTCUSDT'];
 const DEF={source:'binance',sym:'RANDOM',hist:150,play:500,view:90,unit:1000,maxU:5,fee:0.05,mode:'sop',slMode:'off',slK:1.5,rr:1,confirmFrom:2,needOb2:false,fvgZone:true,engulfExtra:false,ver:2,blind:true,hint:false,
-  htf:'15,60,240',layers:{struct:true,ob:true,fvg:true,liq:false,pd:false,swing:false,htf:true}};
+  swingLen:50,mitSrc:'hl',useFib:true,fibStruct:'internal',fibTrend:true,oteHi:0.618,oteLo:0.786,bosBody:0,fibExt:1.272,fibSl:'A',fibExpire:60,
+  biasFilter:false,biasTf:60,posMode:'hide',ladder:false,ladderStr:'1:30,2:30,3:20,4:10,5:10',scaleIn:false,firstPct:50,addAt:'half',addExpire:10,
+  htf:'15,60,240',layers:{struct:true,ob:true,fvg:true,liq:false,pd:false,swing:false,htf:true,bias:true}};
 let cfg=(()=>{
   try{
     const saved=JSON.parse(localStorage.getItem(CKEY))||{},c=Object.assign({},DEF,saved);
@@ -297,6 +352,21 @@ function parseCsv(text){
   out.sort((a,b)=>a.t-b.t);
   return out;
 }
+// 偏見燈號用的大週期 K 棒（只拿這段 5 分 K 結束以前的資料）
+async function fetchKl(sym,interval,endTime,limit){
+  let err;
+  for(const h of['https://data-api.binance.vision','https://api.binance.com']){
+    try{const r=await fetch(`${h}/api/v3/klines?symbol=${sym}&interval=${interval}&endTime=${endTime}&limit=${limit}`);
+      if(!r.ok)throw new Error('HTTP '+r.status);
+      return(await r.json()).map(k=>({t:k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4]}));}catch(e){err=e}
+  }
+  throw err;
+}
+async function fetchHtf(sym,cs){
+  const end=cs[cs.length-1].t+BAR-1,span=cs.length*BAR,map={1440:'1d',240:'4h',60:'1h',30:'30m',15:'15m'},out={};
+  await Promise.all(Object.entries(map).map(async([tf,iv])=>{out[tf]=await fetchKl(sym,iv,end,Math.min(1000,Math.ceil(span/(tf*60000))+8))}));
+  return out;
+}
 let csvData=null;
 let prefetch=null;
 async function loadData(c){
@@ -312,7 +382,7 @@ async function loadData(c){
     const lo=Date.UTC(2021,0,1),hi=Date.now()-need*BAR-86400000*2;
     const start=Math.floor((lo+Math.random()*(hi-lo))/BAR)*BAR;
     const cs=await fetchBinance(sym,start,need);
-    if(cs.length>=need*0.98&&cs.length>=c.hist+50)return{cs,sym};
+    if(cs.length>=need*0.98&&cs.length>=c.hist+50)return{cs,sym,htf:await fetchHtf(sym,cs).catch(()=>null)};
   }
   throw new Error('取得的資料不足');
 }
@@ -327,13 +397,22 @@ function atrArr(cs,n=14){
   }
   return a;
 }
-function analyze(cs,L=3){
-  const N=cs.length,atr=atrArr(cs);
-  const piv=[],ev=[],obs=[],fvg=[],sweeps=[],eq=[];
-  let lastH=null,lastL=null,trend=0,actH=[],actL=[],chIdx=-1;
+// 結構與 OB：和 Pine v4 以後相同的 LuxAlgo 設計
+//   內部結構（5 根）與 Swing 結構（預設 50 根）兩套擺動點，以收盤突破；
+//   OB：突破時在「被突破的擺動點 ～ 突破前一根」之間取 parsed 低點最低（多）／高點最高（空）的 K 棒
+//   擺動點、EQH/EQL、掃蕩仍用左右 3 根的方法（只供溢價折價、流動性圖層使用）
+function analyze(cs,L=3,opt={}){
+  const N=cs.length,atr=atrArr(cs),atr200=atrArr(cs,200);
+  const swingLen=opt.swingLen||50,mitHL=opt.mitSrc!=='close',fibS=opt.fibStruct==='swing'?1:0;
+  const oteHi=opt.oteHi??0.618,oteLo=opt.oteLo??0.786;
+  const piv=[],ev=[],obs=[],fvg=[],sweeps=[],eq=[],fibArms=[];
+  let actH=[],actL=[];
+  const SZ=[5,swingLen];
+  const st=[0,1].map(()=>({leg:0,pH:null,pHBar:0,pHCr:false,pHPrev:null,pL:null,pLBar:0,pLCr:false,pLPrev:null,tr:0,chIdx:-1,sinceH:null,sinceL:null,legLB:null,legHB:null}));
+  const pH=[],pL=[];
   for(let k=0;k<N;k++){
     const c=cs[k],i=k-L;
-    // 擺動高低點（延遲 L 根確認）
+    // 左右 3 根的擺動點（溢價折價、EQH/EQL、掃蕩用）
     if(i>=L){
       let isH=true,isL=true;
       for(let j=i-L;j<=i+L;j++){
@@ -342,52 +421,97 @@ function analyze(cs,L=3){
         else{if(cs[j].h>cs[i].h)isH=false;if(cs[j].l<cs[i].l)isL=false}
       }
       if(isH){
-        const p={type:'H',i,p:cs[i].h,conf:k,eq:false,broken:false};piv.push(p);lastH=p;
+        const p={type:'H',i,p:cs[i].h,conf:k,eq:false};piv.push(p);
         for(const o of actH)if(Math.abs(o.p-p.p)<=atr[k]*0.2){o.eq=p.eq=true;eq.push({type:'H',a:o,b:p,conf:k})}
         actH.push(p);
       }
       if(isL){
-        const p={type:'L',i,p:cs[i].l,conf:k,eq:false,broken:false};piv.push(p);lastL=p;
+        const p={type:'L',i,p:cs[i].l,conf:k,eq:false};piv.push(p);
         for(const o of actL)if(Math.abs(o.p-p.p)<=atr[k]*0.2){o.eq=p.eq=true;eq.push({type:'L',a:o,b:p,conf:k})}
         actL.push(p);
       }
     }
-    // 流動性掃蕩：影線刺穿但收盤收回
     for(const o of actH.slice())if(c.h>o.p){if(c.c<o.p)sweeps.push({side:'H',i:o.i,p:o.p,at:k,eq:o.eq});actH.splice(actH.indexOf(o),1)}
     for(const o of actL.slice())if(c.l<o.p){if(c.c>o.p)sweeps.push({side:'L',i:o.i,p:o.p,at:k,eq:o.eq});actL.splice(actL.indexOf(o),1)}
-    // OB / FVG 失效
-    for(const o of obs)if(o.mit==null&&k>o.at){if(o.dir===1?c.c<o.lo:c.c>o.hi)o.mit=k}
+    // FVG 失效（收盤穿越遠端邊界）
     for(const f of fvg)if(f.mit==null&&k>f.at){if(f.dir===1?c.c<f.lo:c.c>f.hi)f.mit=k}
-    // 結構突破（以收盤）
-    if(lastH&&!lastH.broken&&c.c>lastH.p){
-      const isCH=trend===-1;let valid=true,ext=null;
-      if(isCH)chIdx=k;
-      else if(chIdx>=0){ext=-Infinity;for(let m=chIdx;m<k;m++)ext=Math.max(ext,cs[m].h);valid=c.c>ext}
-      ev.push({type:isCH?'CHoCH':'BOS',dir:1,level:lastH.p,from:lastH.i,at:k,valid,ext});
-      trend=1;lastH.broken=true;
-      const st=Math.max(k-60,lastL?Math.min(lastL.i,lastH.i):lastH.i);
-      let j=st;for(let m=st;m<=k;m++)if(cs[m].l<cs[j].l)j=m;
-      let ob=j;for(let m=j;m>=Math.max(st,j-3);m--)if(cs[m].c<cs[m].o){ob=m;break}
-      obs.push({dir:1,i:ob,hi:cs[ob].h,lo:cs[ob].l,at:k,mit:null});
+    // 波動過大的 K 棒（>= 2 倍 ATR200）高低點對調
+    const hv=k>=199&&(c.h-c.l)>=2*atr200[k];
+    pH.push(hv?c.l:c.h);pL.push(hv?c.h:c.l);
+    // leg 判斷擺動點
+    for(let s=0;s<2;s++){
+      const T=st[s],sz=SZ[s];T.pHPrev=T.pH;T.pLPrev=T.pL;
+      if(k<sz)continue;
+      let hN=-Infinity,lN=Infinity;for(let m=k-sz+1;m<=k;m++){hN=Math.max(hN,cs[m].h);lN=Math.min(lN,cs[m].l)}
+      let nl=T.leg;
+      if(cs[k-sz].h>hN)nl=0;else if(cs[k-sz].l<lN)nl=1;
+      if(nl!==T.leg){
+        if(nl===1){T.legHB=T.pH;T.pL=cs[k-sz].l;T.pLBar=k-sz;T.pLCr=false}
+        else{T.legLB=T.pL;T.pH=cs[k-sz].h;T.pHBar=k-sz;T.pHCr=false}
+        T.leg=nl;
+      }
     }
-    if(lastL&&!lastL.broken&&c.c<lastL.p){
-      const isCH=trend===1;let valid=true,ext=null;
-      if(isCH)chIdx=k;
-      else if(chIdx>=0){ext=Infinity;for(let m=chIdx;m<k;m++)ext=Math.min(ext,cs[m].l);valid=c.c<ext}
-      ev.push({type:isCH?'CHoCH':'BOS',dir:-1,level:lastL.p,from:lastL.i,at:k,valid,ext});
-      trend=-1;lastL.broken=true;
-      const st=Math.max(k-60,lastH?Math.min(lastH.i,lastL.i):lastL.i);
-      let j=st;for(let m=st;m<=k;m++)if(cs[m].h>cs[j].h)j=m;
-      let ob=j;for(let m=j;m>=Math.max(st,j-3);m--)if(cs[m].c>cs[m].o){ob=m;break}
-      obs.push({dir:-1,i:ob,hi:cs[ob].h,lo:cs[ob].l,at:k,mit:null});
+    // 結構突破（先內部、後 Swing）
+    const capOb=()=>{const act=obs.filter(o=>o.mit==null);if(act.length>=100)act[0].mit=k};
+    for(let s=0;s<2;s++){
+      const T=st[s];
+      // 向上
+      {
+        const lv=T.pH,lvp=T.pHPrev,swH=st[1].pH,extra=s===0?(swH==null||lv!==swH):true;
+        if(lv!=null&&lvp!=null&&k>0&&c.c>lv&&cs[k-1].c<=lvp&&!T.pHCr&&extra){
+          const trB=T.tr,isCH=trB===-1;let valid=true,ext=null;
+          if(isCH)T.chIdx=k;else if(T.chIdx>=0){ext=T.sinceH;valid=c.c>ext}
+          T.pHCr=true;T.tr=1;
+          if(opt.useFib&&s===fibS){
+            const big=!opt.fibTrend||(s===1?trB===1:st[1].tr===1),L1=T.legLB,hb=T.pHBar;
+            let A=cs[hb].l,Ai=hb;for(let m=hb+1;m<=k;m++)if(cs[m].l<A){A=cs[m].l;Ai=m}
+            const rng=lv-L1,strong=!(opt.bosBody>0)||(c.c>c.o&&c.c-c.o>=opt.bosBody*atr[k]);
+            if(big&&strong&&L1!=null&&rng>0){const r=(lv-A)/rng;if(r>=oteHi&&r<=oteLo)fibArms.push({dir:1,k,hb,lv,L1,A,Ai,rng})}
+          }
+          ev.push({type:isCH?'CHoCH':'BOS',dir:1,level:lv,from:T.pHBar,at:k,valid,ext,s});
+          if(s===0){
+            const pb=T.pHBar;let mi=pb;for(let m=pb+1;m<=k-1;m++)if(pL[m]<pL[mi])mi=m;
+            capOb();obs.push({dir:1,i:mi,hi:pH[mi],lo:pL[mi],at:k,mit:null});
+          }
+        }
+      }
+      // 向下
+      {
+        const lv=T.pL,lvp=T.pLPrev,swL=st[1].pL,extra=s===0?(swL==null||lv!==swL):true;
+        if(lv!=null&&lvp!=null&&k>0&&c.c<lv&&cs[k-1].c>=lvp&&!T.pLCr&&extra){
+          const trB=T.tr,isCH=trB===1;let valid=true,ext=null;
+          if(isCH)T.chIdx=k;else if(T.chIdx>=0){ext=T.sinceL;valid=c.c<ext}
+          T.pLCr=true;T.tr=-1;
+          if(opt.useFib&&s===fibS){
+            const big=!opt.fibTrend||(s===1?trB===-1:st[1].tr===-1),H1=T.legHB,lb=T.pLBar;
+            let A=cs[lb].h,Ai=lb;for(let m=lb+1;m<=k;m++)if(cs[m].h>A){A=cs[m].h;Ai=m}
+            const rng=H1-lv,strong=!(opt.bosBody>0)||(c.c<c.o&&c.o-c.c>=opt.bosBody*atr[k]);
+            if(big&&strong&&H1!=null&&rng>0){const r=(A-lv)/rng;if(r>=oteHi&&r<=oteLo)fibArms.push({dir:-1,k,hb:lb,lv,L1:H1,A,Ai,rng})}
+          }
+          ev.push({type:isCH?'CHoCH':'BOS',dir:-1,level:lv,from:T.pLBar,at:k,valid,ext,s});
+          if(s===0){
+            const pb=T.pLBar;let mj=pb;for(let m=pb+1;m<=k-1;m++)if(pH[m]>pH[mj])mj=m;
+            capOb();obs.push({dir:-1,i:mj,hi:pH[mj],lo:pL[mj],at:k,mit:null});
+          }
+        }
+      }
     }
-    // FVG
+    // OB 失效（預設影線碰到遠端邊界，建立的同一根也檢查）
+    for(const o of obs)if(o.mit==null){
+      if(o.dir===-1?(mitHL?c.h:c.c)>o.hi:(mitHL?c.l:c.c)<o.lo)o.mit=k;
+    }
+    // 「CH 之後」的極值
+    for(let s=0;s<2;s++){const T=st[s];
+      if(T.chIdx===k){T.sinceH=c.h;T.sinceL=c.l}
+      else if(T.chIdx>=0){T.sinceH=Math.max(T.sinceH,c.h);T.sinceL=Math.min(T.sinceL,c.l)}
+    }
+    // FVG（3 根 K 棒缺口，大於 0.1 ATR）
     if(k>=2){
       if(cs[k].l>cs[k-2].h&&cs[k].l-cs[k-2].h>0.1*atr[k])fvg.push({dir:1,from:k-2,lo:cs[k-2].h,hi:cs[k].l,at:k,mit:null});
       else if(cs[k].h<cs[k-2].l&&cs[k-2].l-cs[k].h>0.1*atr[k])fvg.push({dir:-1,from:k-2,lo:cs[k].h,hi:cs[k-2].l,at:k,mit:null});
     }
   }
-  return{piv,ev,obs,fvg,sweeps,eq,atr};
+  return{piv,ev,obs,fvg,sweeps,eq,atr,fibArms};
 }
 const active=(x,k)=>x.at<=k&&(x.mit==null||x.mit>k);
 // 在時間點 k 對方向 dir 的 SMC 情境（k 之後的資訊一律不使用）
@@ -445,7 +569,7 @@ function sopList(an,cs,k,d){
   return(l.length||!cfg.fvgZone)?l:sopListKind(an,cs,k,d,'FVG');
 }
 function sopObs(an,cs,k,d){const l=sopList(an,cs,k,d);return{ob1:l[0]||null,ob2:l[1]||null}}
-function sopRun(an,cs,rr){
+function sopRun(an,cs,rr,biasFn){
   const N=cs.length,byBar=Array.from({length:N},()=>[]);
   for(const e of an.ev)if(e.valid)byBar[e.at].push({type:e.type==='CHoCH'?'CH':'BOS',dir:e.dir});
   for(const o of an.obs)byBar[o.at].push({type:'OB',dir:o.dir});
@@ -484,8 +608,13 @@ function sopRun(an,cs,rr){
           if(conf&&!(cfg.needOb2&&!ob2)){
             const ref=ob2||z,sl=d===1?ref.lo:ref.hi,risk=(c.c-sl)*d;
             if(risk>0){
-              signal={k,dir:d,entry:c.c,sl,tp:rr>0?c.c+d*risk*rr:null,hasOb2:!!ob2,kind:ch.kind,ob1:z,ob2,armedAt:ch.armedAt,touchAt:ch.first,mid};
-              sigs.push(signal);ch.used=true;ch.first=-1;ch.zone=null;phase='signal';
+              // 偏見過濾：方向不同就不發訊號，但這一輪連招一樣算用掉（和 Pine 相同）
+              const okBias=!biasFn||biasFn(k)===d;
+              if(okBias){
+                signal={k,dir:d,entry:c.c,sl,tp:rr>0?c.c+d*risk*rr:null,hasOb2:!!ob2,kind:ch.kind,ob1:z,ob2,armedAt:ch.armedAt,touchAt:ch.first,mid,model:'SOP'};
+                sigs.push(signal);
+              }
+              ch.used=true;ch.first=-1;ch.zone=null;phase=okBias?'signal':'used';
             }
           }
         }
@@ -520,6 +649,98 @@ function sopCheck(sop,an,cs,k,d){
   if(conf&&!exact)tags.push('不符SOP');
   return{score:(chain?1:0)+(pullback?1:0)+(conf?1:0),exact,tags};
 }
+
+/* ============================== 斐波那契 OTE（和 Pine v5 相同的規則） ==============================
+   1. 前一段 L1→H1，回檔極值 A 落在 0.618～0.786（綠框 OTE）
+   2. 收盤突破 H1（BOS）才成立；可要求大方向（Swing 結構）同向、BOS K 棒實體夠大
+   3. 突破後的新高為 B，在 A→B 再畫一次 0.618～0.786；A 之後留下、仍有效、重疊最多的同向 FVG ∩ OTE = 進場框
+   4. 進場框上緣（空：下緣）掛限價；停損 A 點之外（或進場框之外）；停利 C ± 1.272／1.414 ×（B − A）
+   5. 收盤越過 A、或等超過設定根數就取消；新的設定會取代還沒成交的舊設定 */
+function fibRun(an,cs,o){
+  const N=cs.length,setups=[],armsAt=new Map();
+  for(const a of an.fibArms){if(!armsAt.has(a.k))armsAt.set(a.k,[]);armsAt.get(a.k).push(a)}
+  let cur=null,lastTrade=null;
+  for(let k=0;k<N;k++){
+    const c=cs[k];
+    // 上一根掛的限價單在這根成交
+    if(cur&&cur.pend&&!cur.filled){
+      const p=cur.pend;
+      if(cur.dir===1?c.l<=p.px:c.h>=p.px){
+        Object.assign(cur,{filled:true,fillK:k,entry:cur.dir===1?Math.min(c.o,p.px):Math.max(c.o,p.px),sl:p.sl,tp:p.tp,eTop:p.eTop,eBot:p.eBot,leg2:p.leg2,B:p.B,BIdx:p.BIdx,res:'open',end:N-1,pend:null});
+        for(let j=k+1;j<N;j++){const d=cs[j];
+          if(cur.dir===1?d.l<=cur.sl:d.h>=cur.sl){cur.res='loss';cur.end=j;break}
+          if(cur.dir===1?d.h>=cur.tp:d.l<=cur.tp){cur.res='win';cur.end=j;break}}
+        lastTrade=cur;
+      }
+    }
+    // 新的設定
+    for(const a of armsAt.get(k)||[]){
+      if(cur&&!cur.filled&&!cur.done){cur.done=true;cur.cancelK=k}
+      cur={...a,arm:k,B:a.dir===1?c.h:c.l,BIdx:k,pend:null,filled:false,done:false,hist:{}};setups.push(cur);
+    }
+    // 管理目前的設定
+    if(cur&&!cur.filled&&!cur.done){
+      const d=cur.dir;
+      if(d===1?c.h>cur.B:c.l<cur.B){cur.B=d===1?c.h:c.l;cur.BIdx=k}
+      const leg2=Math.abs(cur.B-cur.A);
+      const oBot=d===1?cur.B-o.oteLo*leg2:cur.B+o.oteHi*leg2,oTop=d===1?cur.B-o.oteHi*leg2:cur.B+o.oteLo*leg2;
+      let eTop=null,eBot=null,best=0;
+      for(const f of an.fvg){
+        if(f.dir!==d||f.at<=cur.Ai||!active(f,k))continue;
+        const t=Math.min(f.hi,oTop),b=Math.max(f.lo,oBot);if(t-b>best){best=t-b;eTop=t;eBot=b}
+      }
+      cur.hist[k]={B:cur.B,BIdx:cur.BIdx,oTop,oBot,eTop,eBot};
+      const dead=(d===1?c.c<cur.A:c.c>cur.A)||k-cur.arm>o.fibExpire;
+      const inTrade=lastTrade&&(lastTrade.res==='open'||lastTrade.end>k);
+      if(dead){cur.done=true;cur.cancelK=k;cur.pend=null}
+      else if(eTop!=null&&!inTrade){
+        const px=d===1?eTop:eBot,sl=o.fibSl==='box'?(d===1?eBot:eTop):cur.A,tp=px+d*o.fibExt*leg2;
+        cur.pend=(px-sl)*d>0?{px,sl,tp,eTop,eBot,leg2,B:cur.B,BIdx:cur.BIdx}:null;
+      }else cur.pend=null;
+    }
+  }
+  return setups;
+}
+// 合併 3+1 與 FIB 的標準訊號，並依「持倉中又出現新訊號」的設定，模擬只持有一筆部位的情況
+function combineSignals(sopSigs,fibSetups,cs,mode){
+  const list=[...sopSigs,...fibSetups.filter(f=>f.filled).map(f=>({model:'FIB',k:f.fillK,dir:f.dir,entry:f.entry,sl:f.sl,tp:f.tp,res:f.res,end:f.end,setup:f}))]
+    .sort((a,b)=>a.k-b.k||(a.model==='SOP'?-1:1));
+  let busy=null;
+  for(const s of list){
+    s.status='taken';
+    if(busy&&busy.end>s.k){
+      if(s.model==='SOP'&&mode==='reverse'&&s.dir!==busy.dir){
+        const b=busy;b.res='rev';b.end=s.k;b.exitPx=cs[s.k].c;
+        b.revR=(b.exitPx-b.entry)*b.dir/Math.abs(b.entry-b.sl);
+      }else{s.status=s.model==='SOP'&&mode==='gray'?'gray':'skip';continue}
+    }
+    busy=s;
+  }
+  return list.filter(s=>s.status!=='skip');
+}
+const resWin=s=>s.res==='win'||(s.res==='rev'&&s.revR>0),resLoss=s=>s.res==='loss'||(s.res==='rev'&&s.revR<=0);
+
+/* ============================== 偏見燈號（和 Pine v5 相同的規則） ==============================
+   各週期用最近兩根已收盤的 K 棒判斷目前這一根：第一根綠 K → 第二根收盤高於其最高點偏多，否則偏空；
+   第一根紅 K → 第二根收盤低於其最低點偏空，否則偏多；無法判斷時往前一組一組找（最多 3 組） */
+const BIAS_TFS=[1440,240,60,30,15];
+function aggHtf(cs,tf){
+  const ms=tf*60000,out=[];let cur=null;
+  for(const c of cs){const t=Math.floor(c.t/ms)*ms;
+    if(!cur||cur.t!==t){cur={t,o:c.o,h:c.h,l:c.l,c:c.c};out.push(cur)}else{cur.h=Math.max(cur.h,c.h);cur.l=Math.min(cur.l,c.l);cur.c=c.c}}
+  return out;
+}
+function biasAt(S,k,tf){
+  const ms=tf*60000,cs=S.cs,list=(S.htf&&S.htf[tf]&&S.htf[tf].length)?S.htf[tf]:S.htfAgg[tf],open=Math.floor(cs[k].t/ms)*ms;
+  const arr=[];for(let i=list.length-1;i>=0&&arr.length<6;i--)if(list[i].t<open)arr.push(list[i]);   // arr[0] = 前一根已收盤
+  const pair=n=>{if(arr.length<n+1)return 0;const ol=arr[n],nw=arr[n-1];return ol.c>ol.o?(nw.c>ol.h?1:-1):ol.c<ol.o?(nw.c<ol.l?-1:1):0};
+  const p1=pair(1),p2=pair(2),p3=pair(3),p4=pair(4),b=p1||p2||p3||p4;
+  if(!b)return{b:0,tgt:null,hit:false,fb:false};
+  const tgt=b===1?arr[0].h:arr[0].l;
+  let fh=-Infinity,fl=Infinity;for(let i=k;i>=0&&cs[i].t>=open;i--){fh=Math.max(fh,cs[i].h);fl=Math.min(fl,cs[i].l)}
+  return{b,tgt,hit:b===1?fh>=tgt:fl<=tgt,fb:p1===0};
+}
+const tfLabel=m=>m>=1440?'D':m>=60?(m/60)+'h':m+'m';
 
 /* ============================== 圖表 ============================== */
 const COL={up:'#26a69a',dn:'#ef5350',ob:'#2962ff',obTxt:'#6f93ff',grid:'#1b2430',txt:'#8493a5',bg:'#0d1117'};
@@ -584,6 +805,36 @@ function drawChart(cv,o){
   const mg=(hi-lo)*0.07||hi*0.001;hi+=mg;lo-=mg;
   const yp=p=>plotT+(hi-p)/(hi-lo)*(priceB-plotT);
   lastGeom={first,bw,plotR,plotT,priceB,hi,lo,end};
+  // 斐波那契 OTE 設定：在時間 t 時看得到的部分（綠框 OTE、BOS、A／B、新一段 OTE、進場框、成交後的停損與目標）
+  const drawFib=(f,t,full)=>{
+    if(!f||f.arm>t)return;
+    const d=f.dir,col=d===1?'38,166,154':'239,83,80';
+    g.save();g.beginPath();g.rect(0,plotT,plotR,priceB-plotT);g.clip();
+    const z1=f.lv-d*cfg.oteHi*f.rng,z2=f.lv-d*cfg.oteLo*f.rng;
+    const bx=(i0,i1,a,b,fill,stroke,dash)=>{const x0=xi(i0)-bw/2,x1=xi(i1)+bw/2,y0=yp(Math.max(a,b)),y1=yp(Math.min(a,b));
+      g.fillStyle=fill;g.fillRect(x0,y0,x1-x0,y1-y0);if(stroke){g.strokeStyle=stroke;g.setLineDash(dash||[]);g.strokeRect(x0+.5,y0+.5,x1-x0,y1-y0);g.setLineDash([])}};
+    const tx=(s,x,y,c)=>{g.fillStyle=c;g.textAlign='left';g.font='bold 11px system-ui,sans-serif';g.fillText(s,x,y);g.font='11px system-ui,sans-serif'};
+    bx(f.hb,f.arm,z1,z2,`rgba(${col},.18)`,`rgba(${col},.8)`);
+    tx('OTE '+cfg.oteHi+'–'+cfg.oteLo,xi(f.hb)-bw/2+3,yp(Math.max(z1,z2))-7,`rgb(${col})`);
+    g.strokeStyle=`rgb(${col})`;g.lineWidth=2;g.beginPath();g.moveTo(xi(f.hb),yp(f.lv));g.lineTo(xi(f.arm),yp(f.lv));g.stroke();g.lineWidth=1;
+    tx('BOS',xi(f.arm)+4,yp(f.lv)+(d===1?-8:10),`rgb(${col})`);
+    // 時間 t 時的 B 與進場框
+    const tt=f.filled&&f.fillK<=t?f.fillK-1:t;let h=null;for(let j=tt;j>=f.arm;j--)if(f.hist[j]){h=f.hist[j];break}
+    if(h){
+      const end=f.filled&&f.fillK<=t?f.fillK:Math.min(t,f.cancelK??t);
+      g.strokeStyle='rgba(66,165,245,.8)';g.setLineDash([5,4]);
+      for(const y of[h.oTop,h.oBot]){g.beginPath();g.moveTo(xi(h.BIdx),yp(y));g.lineTo(xi(end)+bw/2,yp(y));g.stroke()}g.setLineDash([]);
+      if(h.eTop!=null){bx(f.arm,end,h.eTop,h.eBot,'rgba(33,87,243,.28)','#4f8cff');tx(d===1?'Entry Long':'Entry Short',xi(f.arm)-bw/2+3,yp(d===1?h.eBot:h.eTop)+(d===1?12:-6),'#82a7ff')}
+      tx('B',xi(h.BIdx)-3,yp(h.B)+(d===1?-10:12),'#ffd54f');
+    }
+    tx('A',xi(f.Ai)-3,yp(f.A)+(d===1?14:-10),'#ffd54f');
+    if(f.filled&&f.fillK<=t){
+      const e2=full?f.end:Math.min(t,f.end),t1=f.entry+d*1.272*f.leg2,t2=f.entry+d*1.414*f.leg2;
+      bx(f.fillK,e2,t1,t2,'rgba(255,167,38,.16)','rgba(255,167,38,.8)');tx('Target 1.272–1.414',xi(f.fillK)-bw/2+3,yp(d===1?t2:t2)+(d===1?-6:12),'#ffb74d');
+      g.strokeStyle='#ef5350';g.setLineDash([6,4]);g.beginPath();g.moveTo(xi(f.fillK),yp(f.sl));g.lineTo(xi(e2)+bw/2,yp(f.sl));g.stroke();g.setLineDash([]);
+    }
+    g.restore();
+  };
   g.font='11px system-ui,sans-serif';g.textBaseline='middle';
   // 網格與價格軸
   const step=niceStep((hi-lo)/6);
@@ -693,21 +944,21 @@ function drawChart(cv,o){
     // SOP 標準訊號：風險回報框（TradingView 樣式），聚焦中的訊號較亮
     g.save();g.beginPath();g.rect(0,plotT,plotR,priceB-plotT);g.clip();
     for(const s of o.signals){
-      if(s.k>cur||s.end<first||s.k>end)continue;
+      if(s.k>cur||s.end<first||s.k>end||s.status==='gray')continue;
       const x0=xi(s.k),x1=xi(Math.min(s.end,end))+bw/2,ye=yp(s.entry);
       g.globalAlpha=o.focus&&o.focus!==s?0.4:1;
       g.fillStyle='rgba(239,83,80,.18)';g.fillRect(x0,Math.min(ye,yp(s.sl)),x1-x0,Math.abs(yp(s.sl)-ye));
       if(s.tp!=null){g.fillStyle='rgba(38,166,154,.18)';g.fillRect(x0,Math.min(ye,yp(s.tp)),x1-x0,Math.abs(yp(s.tp)-ye))}
       g.strokeStyle='#cfd8e3';g.beginPath();g.moveTo(x0,ye);g.lineTo(x1,ye);g.stroke();
-      const lab=s.res==='win'?'✓ 停利':s.res==='loss'?'✗ 停損':'未結束';
-      g.fillStyle=s.res==='win'?COL.up:s.res==='loss'?COL.dn:'#cfd8e3';
+      const lab=(resWin(s)?'✓ ':resLoss(s)?'✗ ':'')+resText(s);
+      g.fillStyle=resWin(s)?COL.up:resLoss(s)?COL.dn:'#cfd8e3';
       g.textAlign='left';g.font='bold 11px system-ui,sans-serif';
       g.fillText(`#${s.n} ${lab}`,x0+4,s.dir===1?yp(s.sl)+10:yp(s.sl)-10);g.font='11px system-ui,sans-serif';
       g.globalAlpha=1;
     }
     // 聚焦訊號：當時的 OB1 / OB2
     const fs=o.focus;
-    if(fs&&fs.k<=cur){
+    if(fs&&fs.k<=cur&&fs.model!=='FIB'){
       for(const [ob,name] of[[fs.ob1,(fs.kind==='FVG'?'FVG':'OB1')+' 進場區'],[fs.ob2,(fs.kind==='FVG'?'第2個 FVG':'OB2')+' 防守（停損）']]){
         if(!ob)continue;
         const xa=Math.max(0,xi(ob.i!=null?ob.i:ob.from)-bw/2),xb=xi(fs.k)+bw/2,ya=yp(ob.hi),yb=yp(ob.lo);
@@ -724,20 +975,21 @@ function drawChart(cv,o){
     };
     for(const s of o.signals){
       if(s.k>cur||s.k<first||s.k>end)continue;
-      const f=o.focus===s,x=xi(s.k),c=cs[s.k],d=s.dir;
-      g.fillStyle=f?'rgba(255,213,79,.22)':'rgba(255,213,79,.09)';g.fillRect(x-bw/2,plotT,bw,priceB-plotT);
-      const col=f?'#ffd54f':d===1?'#4dd0c4':'#ff8a80',y0=d===1?yp(c.l)+6:yp(c.h)-6;
+      const f=o.focus===s,x=xi(s.k),c=cs[s.k],d=s.dir,gray=s.status==='gray';
+      g.fillStyle=f?'rgba(255,213,79,.22)':'rgba(255,213,79,.09)';if(!gray)g.fillRect(x-bw/2,plotT,bw,priceB-plotT);
+      const col=gray?'#6b7686':f?'#ffd54f':s.model==='FIB'?(d===1?'#6f93ff':'#ff8a80'):d===1?'#4dd0c4':'#ff8a80',y0=d===1?yp(c.l)+6:yp(c.h)-6;
       g.fillStyle=col;g.beginPath();
       if(d===1){g.moveTo(x,y0);g.lineTo(x-9,y0+14);g.lineTo(x-3,y0+14);g.lineTo(x-3,y0+26);g.lineTo(x+3,y0+26);g.lineTo(x+3,y0+14);g.lineTo(x+9,y0+14)}
       else{g.moveTo(x,y0);g.lineTo(x-9,y0-14);g.lineTo(x-3,y0-14);g.lineTo(x-3,y0-26);g.lineTo(x+3,y0-26);g.lineTo(x+3,y0-14);g.lineTo(x+9,y0-14)}
       g.fill();
-      pill(`${f?'③ ':''}#${s.n} ${d===1?'做多':'做空'} ${fmtP(s.entry)}`,x,y0+d*40,col);
+      pill(gray?`#${s.n} 持倉中略過`:`${f&&s.model!=='FIB'?'③ ':''}#${s.n} ${s.model==='FIB'?'FIB ':''}${d===1?'做多':'做空'} ${fmtP(s.entry)}`,x,y0+d*40,col);
     }
     if(fs&&fs.k<=cur&&fs.touchAt>=0&&fs.mid!=null){
       const ym=yp(fs.mid);g.strokeStyle='#ffd54f';g.setLineDash([3,3]);g.beginPath();g.moveTo(xi(fs.touchAt)-bw/2,ym);g.lineTo(xi(fs.k)+bw,ym);g.stroke();g.setLineDash([]);
       g.fillStyle='#ffd54f';g.textAlign='left';g.fillText('第1根實體½',xi(fs.k)+bw+2,ym);
     }
-    if(fs&&fs.k<=cur){
+    if(fs&&fs.k<=cur&&fs.model==='FIB')drawFib(fs.setup,cur,true);
+    if(fs&&fs.k<=cur&&fs.model!=='FIB'){
       const steps=[[fs.armedAt,'① 連招成立'],[fs.touchAt,'② 第1根回踩 OB1']],stack={};
       for(const [i,t] of steps){
         if(i<0||i<first||i>end||i>cur)continue;
@@ -748,6 +1000,7 @@ function drawChart(cv,o){
       }
     }
   }
+  if(o.fibNow)drawFib(o.fibNow,cur,false);
   // 交易連線
   if(o.tradeLines){
     for(const t of o.tradeLines){
@@ -778,6 +1031,8 @@ function drawChart(cv,o){
     };
     line(p.avg,'#42a5f5',[],`${p.dir===1?'多':'空'} ${p.units}u 均價`);
     line(p.sl,'#ef5350',[6,4],'SL');line(p.tp,'#26a69a',[6,4],'TP');
+    if(p.levels)for(const lv of p.levels)if(!lv.done)line(lv.px,'rgba(38,166,154,.75)',[2,4],`R${lv.r}（${lv.pc}%）`);
+    if(p.add)line(p.add.px,'#4f8cff',[2,3],'第 2 批掛單');
   }
   // 現價線
   if(cur<=end){
@@ -811,10 +1066,12 @@ let S=null;
 const INIT_EQ=10000;
 function startSession(data){
   const cs=data.cs;
-  const an=analyze(cs);
-  S={cs,an,sop:sopRun(an,cs,cfg.rr),sym:data.sym,synthetic:!!data.synthetic,hist:cfg.hist,cur:cfg.hist-1,N:cs.length,
+  const an=analyze(cs,3,{swingLen:cfg.swingLen,mitSrc:cfg.mitSrc,useFib:cfg.useFib,fibStruct:cfg.fibStruct,fibTrend:cfg.fibTrend,oteHi:cfg.oteHi,oteLo:cfg.oteLo,bosBody:cfg.bosBody});
+  S={cs,an,sop:null,fib:[],htf:data.htf||null,htfAgg:Object.fromEntries(BIAS_TFS.map(tf=>[tf,aggHtf(cs,tf)])),sym:data.sym,synthetic:!!data.synthetic,hist:cfg.hist,cur:cfg.hist-1,N:cs.length,
      over:false,pos:null,trades:[],fills:[],realized:0,eqCurve:[0],log:[],sid:Date.now(),
      rv:{cur:0,focus:null,future:$('#rvFuture').checked,sig:$('#rvSig').checked,best:$('#rvBest').checked},best:null};
+  S.sop=sopRun(an,cs,cfg.rr,cfg.biasFilter?(k=>biasAt(S,k,cfg.biasTf).b):null);
+  S.fib=cfg.useFib?fibRun(an,cs,{oteHi:cfg.oteHi,oteLo:cfg.oteLo,fibExt:cfg.fibExt,fibSl:cfg.fibSl,fibExpire:cfg.fibExpire}):[];
   $('#setup').hidden=true;$('#game').hidden=false;$('#playPanel').hidden=false;$('#sumPanel').hidden=true;$('#reviewbar').hidden=true;
   $('#warn').innerHTML=S.synthetic?'<div class="warn">目前使用的是模擬（亂數）資料，僅供測試，不是真實歷史走勢。</div>':'';
   log('開始訓練。目前只看得到已發生的 K 棒。');
@@ -823,8 +1080,10 @@ function startSession(data){
 }
 function log(m){S.log.unshift(m);if(S.log.length>40)S.log.pop()}
 function floatPnl(){const p=S.pos;if(!p)return 0;return(S.cs[S.cur].c-p.avg)*p.dir*p.qty-p.fees-S.cs[S.cur].c*p.qty*cfg.fee/100}
+// "1:30,2:30" → [[1,30],[2,30]]
+function parseLadder(str){return String(str||'').split(/[,，\s]+/).map(x=>x.split(/[:：]/).map(Number)).filter(x=>x.length===2&&x[0]>0&&x[1]>=0&&isFinite(x[0])&&isFinite(x[1])).slice(0,8)}
 function openPos(price,d){
-  const c=S.cs[S.cur],qty=cfg.unit/price,fee=cfg.unit*cfg.fee/100;
+  const c=S.cs[S.cur];
   let sl=null,tp=null,slNote='';
   const atrSl=()=>{sl=price-d*cfg.slK*S.an.atr[S.cur]};
   if(cfg.mode==='sop'){
@@ -833,29 +1092,47 @@ function openPos(price,d){
     else{atrSl();slNote='找不到同向 OB，改用 ATR'}
   }else if(cfg.slMode==='atr'){atrSl();slNote='ATR'}
   if(sl!=null&&cfg.rr>0)tp=price+(price-sl)*cfg.rr;
+  // 分批：第 1 批的金額、R、各目標、第 2 批掛單
+  const R=sl!=null?Math.abs(price-sl):null,scale=cfg.scaleIn&&R>0&&cfg.firstPct<100;
+  const cash=scale?cfg.unit*cfg.firstPct/100:cfg.unit,qty=cash/price,fee=cash*cfg.fee/100;
+  let levels=null,add=null;
+  if(cfg.ladder&&R>0){levels=parseLadder(cfg.ladderStr).sort((a,b)=>a[0]-b[0]).map(([r,pc])=>({r,pc,px:price+d*r*R,done:false}));if(levels.length)tp=null;else levels=null}
+  if(scale){
+    let px=price-d*0.5*R;
+    if(cfg.addAt==='ob1'){const {ob1}=sopObs(S.an,S.cs,S.cur,d);px=ob1?(ob1.hi+ob1.lo)/2:null}
+    if(px!=null&&(px-sl)*d>0&&(price-px)*d>0)add={px,cash:cfg.unit-cash,exp:S.cur+cfg.addExpire,r1:price+d*(levels?levels[0].r:(cfg.rr||1))*R};
+  }
   const ctx=sopCheck(S.sop,S.an,S.cs,S.cur,d);
   if(cfg.mode==='sop'&&!slNote.startsWith('OB2'))ctx.tags.push(slNote.startsWith('OB1')?'停損用OB1':'停損用ATR');
-  S.pos={dir:d,qty,cost:price*qty,avg:price,units:1,sl,tp,entryIdx:S.cur,fees:fee,risk:sl!=null?qty*Math.abs(price-sl):0,mfe:0,mae:0,ctx};
+  S.pos={dir:d,qty,qtyTotal:qty,cost:price*qty,avg:price,units:1,sl,tp,entryIdx:S.cur,fees:fee,risk:sl!=null?qty*Math.abs(price-sl):0,mfe:0,mae:0,ctx,base:price,R,levels,add,partPnl:0,partials:0};
   S.fills.push({i:S.cur,dir:d,kind:'open',price});
-  log(`${d===1?'買進開多':'賣出開空'} @ ${fmtP(price)}　SOP ${ctx.score}/3 [${ctx.tags.join('、')}]${slNote?`　停損 ${fmtP(sl)}（${slNote}）`:''}`);
+  log(`${d===1?'買進開多':'賣出開空'}${scale?`（第 1 批 ${cfg.firstPct}%）`:''} @ ${fmtP(price)}　SOP ${ctx.score}/3 [${ctx.tags.join('、')}]${slNote?`　停損 ${fmtP(sl)}（${slNote}）`:''}${add?`　第 2 批掛 ${fmtP(add.px)}`:''}`);
 }
-function addUnit(price,d){
-  const p=S.pos,qty=cfg.unit/price;
-  p.cost+=price*qty;p.qty+=qty;p.avg=p.cost/p.qty;p.units++;p.fees+=cfg.unit*cfg.fee/100;
+function addUnit(price,d,cash=cfg.unit){
+  const p=S.pos,qty=cash/price;
+  p.cost=p.avg*p.qty+price*qty;p.qty+=qty;p.qtyTotal+=qty;p.avg=p.cost/p.qty;p.units++;p.fees+=cash*cfg.fee/100;
   if(p.sl!=null)p.risk+=qty*Math.max(0,(price-p.sl)*d);
   S.fills.push({i:S.cur,dir:d,kind:'add',price});
   log(`加碼 ${p.units} 單位 @ ${fmtP(price)}，均價 ${fmtP(p.avg)}`);
 }
 function closePos(price,idx,reason){
   const p=S.pos;
-  const exitFee=price*p.qty*cfg.fee/100,gross=(price-p.avg)*p.dir*p.qty,pnl=gross-p.fees-exitFee;
-  S.realized+=pnl;
+  const exitFee=price*p.qty*cfg.fee/100,gross=(price-p.avg)*p.dir*p.qty,pnlRem=gross-exitFee,pnl=pnlRem+p.partPnl-p.fees;
+  S.realized+=pnlRem-p.fees;
   const tr={sid:S.sid,sym:S.sym,dir:p.dir,units:p.units,entryIdx:p.entryIdx,exitIdx:idx,entry:p.avg,exit:price,
-    pnl,pct:pnl/(p.avg*p.qty)*100,R:p.risk>0?pnl/p.risk:null,bars:idx-p.entryIdx,reason,score:p.ctx.score,sop:p.ctx.exact,tags:p.ctx.tags,mode:cfg.mode,mfe:p.mfe*100,mae:p.mae*100,at:Date.now()};
+    pnl,pct:pnl/(p.avg*p.qtyTotal)*100,partials:p.partials,R:p.risk>0?pnl/p.risk:null,bars:idx-p.entryIdx,reason,score:p.ctx.score,sop:p.ctx.exact,tags:p.ctx.tags,mode:cfg.mode,mfe:p.mfe*100,mae:p.mae*100,at:Date.now()};
   S.trades.push(tr);S.fills.push({i:idx,dir:p.dir,kind:'close',price});
   const db=DB.load();db.trades.push(tr);DB.save(db);
+  if(p.partials&&!p.ctx.tags.includes('分批止盈'))p.ctx.tags.push('分批止盈');
   log(`平倉(${{manual:'手動',sl:'停損',tp:'停利',end:'結束'}[reason]}) @ ${fmtP(price)}　${fmtM(pnl)} USDT${tr.R!=null?`　${fmtM(tr.R)}R`:''}`);
   S.pos=null;
+}
+// 分批止盈：平掉一部分（已實現損益先入帳，進場手續費在全部平倉時扣）
+function partialExit(price,idx,qtyOut,label){
+  const p=S.pos,fee=price*qtyOut*cfg.fee/100,g=(price-p.avg)*p.dir*qtyOut-fee;
+  p.partPnl+=g;S.realized+=g;p.qty-=qtyOut;p.partials++;
+  S.fills.push({i:idx,dir:p.dir,kind:'close',price});
+  log(`${label} 平倉 ${(qtyOut/p.qtyTotal*100).toFixed(0)}% @ ${fmtP(price)}　${fmtM(g)} USDT`);
 }
 function act(a){
   if(!S||S.over||S.cur>=S.N-1)return;
@@ -877,6 +1154,25 @@ function advance(){
     const fav=p.dir===1?c.h-p.avg:p.avg-c.l,adv=p.dir===1?p.avg-c.l:c.h-p.avg;
     p.mfe=Math.max(p.mfe,fav/p.avg);p.mae=Math.max(p.mae,adv/p.avg);
     if(hit)closePos(hit[1],k,hit[0]);
+    else{
+      const d=p.dir;
+      // 第 2 批：碰到 R1 或過期就取消；回踩到掛單價就成交
+      if(p.add){
+        if((d===1?c.h>=p.add.r1:c.l<=p.add.r1)||k>p.add.exp){log('第 2 批掛單取消');p.add=null}
+        else if(d===1?c.l<=p.add.px:c.h>=p.add.px){const px=d===1?Math.min(c.o,p.add.px):Math.max(c.o,p.add.px);
+          addUnit(px,d,p.add.cash);S.fills[S.fills.length-1].i=k;p.add=null}
+      }
+      // 分批止盈（由近到遠）；最後一個目標平掉剩下的全部
+      if(p.levels){
+        const last=p.levels.length-1;
+        for(let i=0;i<=last&&S.pos;i++){const lv=p.levels[i];if(lv.done)continue;
+          if(!(d===1?c.h>=lv.px:c.l<=lv.px))break;
+          lv.done=true;const px=d===1?Math.max(c.o,lv.px):Math.min(c.o,lv.px);
+          const q=Math.min(p.qty,p.qtyTotal*lv.pc/100);
+          if(i===last||p.qty-q<=p.qtyTotal*1e-9)closePos(px,k,'tp');else if(q>0)partialExit(px,k,q,'R'+lv.r);
+        }
+      }
+    }
   }
   S.eqCurve.push(S.realized+floatPnl());
   if(k>=S.N-1)endSession();else renderAll();
@@ -898,7 +1194,7 @@ function endSession(){
   const db=DB.load();
   db.sessions.push({sid:S.sid,sym:S.sym,t0:cs[0].t,pnl:S.realized,n:S.trades.length,dd,at:Date.now()});DB.save(db);
   S.rv.cur=S.N-1;
-  S.sigAll=S.sop.sigs.filter(s=>s.k>=S.hist-1);
+  S.sigAll=combineSignals(S.sop.sigs.filter(s=>s.k>=S.hist-1),S.fib.filter(f=>f.filled&&f.fillK>=S.hist-1),S.cs,cfg.posMode);
   S.sigAll.forEach(s=>{s.took=S.trades.some(t=>t.dir===s.dir&&Math.abs(t.entryIdx-s.k)<=1)});
   applySigFilter();
   $('#playPanel').hidden=true;$('#sumPanel').hidden=false;$('#reviewbar').hidden=false;
@@ -914,13 +1210,14 @@ function chartOpts(){
   const timeLabel=(i,full)=>blind?`${i-(S.hist-1)>=0?'+':''}${i-(S.hist-1)}`+(full?' 根':''):(full?fmtT(S.cs[i].t):(()=>{const d=new Date(S.cs[i].t);return d.getHours()===0&&d.getMinutes()<30?`${d.getMonth()+1}/${d.getDate()}`:`${pad2(d.getHours())}:${pad2(d.getMinutes())}`})());
   const st=S.sop.st[S.over?S.rv.cur:S.cur];
   const sopObs=cfg.hint&&st.phase!=='none'&&st.phase!=='building'&&st.phase!=='used'?{ob1:st.ob1,ob2:st.ob2}:null;
-  if(!S.over)return{cs:S.cs,an:S.an,cur:S.cur,end:S.cur,viewN:cfg.view,layers:cfg.layers,pos:S.pos,fills:S.fills,timeLabel,sopObs,htf};
+  const fibNow=!S.over&&cfg.hint&&cfg.useFib?S.fib.filter(f=>f.arm<=S.cur&&!(f.cancelK!=null&&f.cancelK<=S.cur)&&!(f.filled&&f.end<S.cur)).pop()||null:null;
+  if(!S.over)return{cs:S.cs,an:S.an,cur:S.cur,end:S.cur,viewN:cfg.view,layers:cfg.layers,pos:S.pos,fills:S.fills,timeLabel,sopObs,htf,fibNow};
   const rv=S.rv,end=rv.future?Math.min(S.N-1,rv.cur+Math.round(cfg.view*0.4)):rv.cur;
   return{cs:S.cs,an:S.an,cur:rv.cur,end,viewN:cfg.view,layers:cfg.layers,pos:null,fills:S.fills,timeLabel,sopObs,htf,
     best:rv.best?S.best:null,signals:rv.sig?S.sigList:null,focus:rv.sig?S.sigList[rv.focus]:null,tradeLines:S.trades};
 }
 function redraw(){if(S)drawChart($('#cv'),chartOpts())}
-function renderAll(){renderTop();renderPos();renderHint();renderLog();renderButtons();redraw()}
+function renderAll(){renderTop();renderPos();renderHint();renderLog();renderButtons();renderBias();redraw()}
 function renderTop(){
   const unreal=floatPnl(),tot=S.realized+unreal,bal=INIT_EQ+tot;
   const blind=cfg.blind&&!S.over;
@@ -964,6 +1261,14 @@ function renderHint(){
   if(['armed','touched','signal'].includes(s.phase)){const fk=s.kind==='FVG';h+=`<span>${fk?'FVG':'OB1'} 進場區</span><span>${z(s.ob1)}</span><span>${fk?'第2個 FVG':'OB2'} 防守</span><span>${z(s.ob2)}</span>`}
   if(s.signal)h+=`<span>進場</span><span class="${dc}">${fmtP(s.signal.entry)}</span><span>SL / TP</span><span>${fmtP(s.signal.sl)} / ${fmtP(s.signal.tp)}</span>`;
   if(cancel&&S.cur-cancel.k<=20)h+=`<span>最近取消</span><span class="dn">反向 ${cancel.by}，${S.cur-cancel.k} 根前</span>`;
+  if(cfg.useFib){
+    const f=S.fib.filter(x=>x.arm<=S.cur&&!(x.cancelK!=null&&x.cancelK<=S.cur)&&!(x.filled&&x.end<S.cur)).pop();
+    let t='無設定';
+    if(f){const hh=f.hist[S.cur];
+      t=f.filled&&f.fillK<=S.cur?`已成交${f.dir===1?'做多':'做空'} @ ${fmtP(f.entry)}，SL ${fmtP(f.sl)}／TP ${fmtP(f.tp)}`
+        :hh&&hh.eTop!=null?`${f.dir===1?'做多':'做空'}：等回到進場框 ${fmtP(hh.eBot)} – ${fmtP(hh.eTop)}`:`${f.dir===1?'做多':'做空'}：BOS 已成立，等待 FVG 與新一段 OTE 重疊`}
+    h+=`<span>斐波那契 OTE</span><span>${t}</span>`;
+  }
   box.innerHTML=h+`</div><div class="mut" style="font-size:11px;margin-top:6px">SOP：同向 3 條件（BOS 須收在 CH 之後的最高點／最低點之外）→ 回踩 OB1，第 ${cfg.confirmFrom} 根起收盤須越過 OB 外緣與第 1 根實體中點；停損第 2 個 OB 外側，停利 ${cfg.rr}R。反向 CH 出現就放棄。</div>`;
 }
 const GOOD=/符合SOP|連招成立|回踩OB|FVG回踩|確認收線/,BAD=/追價|無連招|逆連招|停損用|不符SOP/;
@@ -990,27 +1295,42 @@ function renderSummary(){
     sopSummary()+
     `<div class="mut" style="margin-top:8px;font-size:12px">${S.sym}　${fmtT(S.cs[0].t)} ～ ${fmtT(S.cs[S.N-1].t)}</div>`;
   $('#sigCount').textContent=`（顯示 ${S.sigList.length} / 共 ${S.sigAll.length} 個）`;
-  $('#sigTable').innerHTML=`<tr><th>#</th><th>時間</th><th>方向</th><th>結果</th><th>你</th></tr>`+
-    S.sigList.map((s,i)=>`<tr class="click" data-i="${i}"><td>${s.n}</td><td>${fmtT(S.cs[s.k].t).slice(5)}</td><td class="${s.dir===1?'up':'dn'}">${s.dir===1?'多':'空'}</td>`+
-      `<td class="${s.res==='win'?'up':s.res==='loss'?'dn':''}">${s.res==='win'?'停利':s.res==='loss'?'停損':'未結束'}</td><td class="${s.took?'up':'dn'}">${s.took?'✓ 跟上':'✗ 錯過'}</td></tr>`).join('')||'<tr><td>本局沒有符合條件的進場點</td></tr>';
+  $('#sigTable').innerHTML=`<tr><th>#</th><th>類型</th><th>時間</th><th>方向</th><th>結果</th><th>你</th></tr>`+
+    S.sigList.map((s,i)=>`<tr class="click" data-i="${i}"${s.status==='gray'?' style="opacity:.55"':''}><td>${s.n}</td><td>${s.model==='FIB'?'FIB':'3+1'}</td><td>${fmtT(S.cs[s.k].t).slice(5)}</td><td class="${s.dir===1?'up':'dn'}">${s.dir===1?'多':'空'}</td>`+
+      `<td class="${resCls(s)}">${resText(s)}</td><td class="${s.took?'up':'dn'}">${s.took?'✓ 跟上':'✗ 錯過'}</td></tr>`).join('')||'<tr><td>本局沒有符合條件的進場點</td></tr>';
   $('#sumTable').innerHTML=`<tr><th>#</th><th>向</th><th>單位</th><th>損益</th><th>R</th><th>SOP</th><th>出場</th></tr>`+
     S.trades.map((t,i)=>`<tr class="click" data-i="${i}"><td>${i+1}</td><td class="${t.dir===1?'up':'dn'}">${t.dir===1?'多':'空'}</td><td>${t.units}</td>`+
       `<td class="${cls(t.pnl)}">${fmtM(t.pnl)}</td><td>${t.R!=null?fmtM(t.R):'-'}</td><td>${t.score}/3</td><td>${{manual:'手動',sl:'停損',tp:'停利',end:'結束'}[t.reason]}</td></tr>`+
       `<tr><td colspan="7" style="text-align:left;padding-bottom:6px"><div class="tags">${tagHtml(t.tags)}</div></td></tr>`).join('')||'<tr><td>本局沒有交易</td></tr>';
 }
 // 本局若完全照 SOP 執行的結果
+// 每個訊號實際拿到的 R（停利以實際停利距離計、停損 −1R、反手以平倉價計）
+function sigR(s){
+  if(s.res==='win')return Math.abs(s.tp-s.entry)/Math.abs(s.entry-s.sl);
+  if(s.res==='loss')return -1;
+  if(s.res==='rev')return s.revR;
+  return null;
+}
+const resText=s=>s.status==='gray'?'持倉中略過':s.res==='win'?'停利':s.res==='loss'?'停損':s.res==='rev'?'反手平倉':'未結束';
+const resCls=s=>s.status==='gray'?'mut':resWin(s)?'up':resLoss(s)?'dn':'';
+// 本局若完全照標準訊號執行的結果（同一時間只持有一筆）
 function sopSummary(){
-  const sg=S.sop.sigs.filter(s=>s.k>=S.hist-1),w=sg.filter(s=>s.res==='win').length,l=sg.filter(s=>s.res==='loss').length;
-  const took=sg.filter(s=>S.trades.some(t=>t.dir===s.dir&&Math.abs(t.entryIdx-s.k)<=1)).length;
-  const missed=sg.length-took;
-  return `<div class="mut" style="margin-top:10px;font-size:12.5px;line-height:1.7">本局 SOP 標準訊號 <b style="color:var(--txt)">${sg.length}</b> 個：`+
-    `停利 <span class="up">${w}</span>、停損 <span class="dn">${l}</span>${sg.length-w-l?`、未結束 ${sg.length-w-l}`:''}`+
-    `${w+l?`（照做勝率 ${(w/(w+l)*100).toFixed(0)}%，${cfg.rr}R 淨 ${fmtM(w*cfg.rr-l,1)}R）`:''}。你跟上 ${took} 個，錯過 ${missed} 個。`+
-    `${S.sop.cancels.filter(c=>c.k>=S.hist-1).length?` 反向訊號取消的連招 ${S.sop.cancels.filter(c=>c.k>=S.hist-1).length} 次。`:''}</div>`;
+  const taken=S.sigAll.filter(s=>s.status==='taken');
+  const part=(m)=>{
+    const sg=taken.filter(s=>s.model===m),w=sg.filter(resWin).length,l=sg.filter(resLoss).length,net=sum(sg.map(sigR).filter(v=>v!=null));
+    return{n:sg.length,w,l,open:sg.length-w-l,net,took:sg.filter(s=>s.took).length};
+  };
+  const a=part('SOP'),f=part('FIB'),gray=S.sigAll.filter(s=>s.status==='gray').length;
+  const line=(name,x)=>`${name} <b style="color:var(--txt)">${x.n}</b> 個：勝 <span class="up">${x.w}</span>、敗 <span class="dn">${x.l}</span>${x.open?`、未結束 ${x.open}`:''}`+
+    `${x.w+x.l?`（勝率 ${(x.w/(x.w+x.l)*100).toFixed(0)}%，淨 ${fmtM(x.net,1)}R）`:''}，你跟上 ${x.took} 個。`;
+  return `<div class="mut" style="margin-top:10px;font-size:12.5px;line-height:1.7">本局標準訊號（同時只持有一筆）：<br>`+line('3+1 SOP',a)+
+    (cfg.useFib?'<br>'+line('斐波那契 OTE',f):'')+
+    `${gray?`<br>持倉中略過的訊號 ${gray} 個（灰色顯示）。`:''}`+
+    `${S.sop.cancels.filter(c=>c.k>=S.hist-1).length?`<br>反向訊號取消的連招 ${S.sop.cancels.filter(c=>c.k>=S.hist-1).length} 次。`:''}</div>`;
 }
 function applySigFilter(){
   const only=$('#rvWin').checked;
-  S.sigList=S.sigAll.filter(s=>!only||s.res==='win');
+  S.sigList=S.sigAll.filter(s=>!only||(s.status==='taken'&&resWin(s)));
   S.sigList.forEach((s,i)=>s.n=i+1);
   S.rv.focus=null;
 }
@@ -1019,14 +1339,25 @@ function sigFocus(i){
   i=(i+L.length)%L.length;S.rv.focus=i;
   if(!S.rv.sig){S.rv.sig=true;$('#rvSig').checked=true}
   const s=L[i];
-  $('#rvFocus').innerHTML=`第 <b style="color:var(--txt)">${s.n}</b> / ${L.length} 個：${fmtT(S.cs[s.k].t)}　${s.dir===1?'<span class="up">做多</span>':'<span class="dn">做空</span>'} @ ${fmtP(s.entry)}　SL ${fmtP(s.sl)}　TP ${fmtP(s.tp)}　`+
-    (s.res==='win'?'<span class="up">停利</span>':s.res==='loss'?'<span class="dn">停損</span>':'未結束')+`　${s.took?'你有跟上':'<span class="dn">你錯過了</span>'}`;
+  $('#rvFocus').innerHTML=`第 <b style="color:var(--txt)">${s.n}</b> / ${L.length} 個（${s.model==='FIB'?'斐波那契 OTE':'3+1 SOP'}）：${fmtT(S.cs[s.k].t)}　${s.dir===1?'<span class="up">做多</span>':'<span class="dn">做空</span>'} @ ${fmtP(s.entry)}　SL ${fmtP(s.sl)}　TP ${fmtP(s.tp)}　`+
+    `<span class="${resCls(s)}">${resText(s)}</span>`+`　${s.took?'你有跟上':'<span class="dn">你錯過了</span>'}`;
   $$('#sigTable tr.click').forEach(r=>r.classList.toggle('sel',+r.dataset.i===i));
   rvGo(s.k);
 }
 function rvGo(v){
   const r=S.rv;r.cur=Math.max(S.hist-1,Math.min(S.N-1,v));$('#rvSlider').value=r.cur;
-  $('#rvTime').textContent=fmtT(S.cs[r.cur].t)+`　(第 ${r.cur-S.hist+1} 根)`;redraw();
+  $('#rvTime').textContent=fmtT(S.cs[r.cur].t)+`　(第 ${r.cur-S.hist+1} 根)`;renderBias();redraw();
+}
+// 偏見燈號：時區／偏見／達成（滑鼠移到燈號上看目標價）
+function renderBias(){
+  const card=$('#biasCard');card.hidden=!cfg.layers.bias;if(!cfg.layers.bias||!S)return;
+  const k=S.over?S.rv.cur:S.cur;let anyFb=false;
+  $('#biasTb').innerHTML='<tr><th>時區</th><th>偏見</th><th>達成</th></tr>'+BIAS_TFS.map(tf=>{
+    const b=biasAt(S,k,tf);if(b.fb)anyFb=true;
+    const col=b.b===1?'var(--up)':b.b===-1?'var(--dn)':'var(--mut)';
+    const tip=b.b?`目標（${b.b===1?'前高':'前低'}）：${fmtP(b.tgt)}`:'資料不足，無法判斷';
+    return `<tr><td>${tfLabel(tf)}</td><td class="lamp" style="color:${col};opacity:${b.fb?.6:1}" title="${tip}">●${b.fb?'*':''}</td><td class="${b.hit?'up':'mut'}">${b.b?(b.hit?'✓':'…'):''}</td></tr>`;
+  }).join('')+(anyFb?'<tr><td colspan="3" class="mut" style="font-size:11px">*沿用前一組的趨勢</td></tr>':'');
 }
 
 /* ============================== 統計頁 ============================== */
@@ -1043,7 +1374,7 @@ function renderStats(){
   const row=(name,sub)=>{const x=agg(sub);return x?`<tr><td>${name}</td><td>${x.n}</td><td>${(x.wr*100).toFixed(0)}%</td><td class="${cls(x.pnl)}">${fmtM(x.pnl,1)}</td><td class="${cls(x.exp)}">${fmtM(x.exp,2)}</td><td>${fmtPF(x.pf)}</td><td>${x.avgR!=null?fmtM(x.avgR):'-'}</td></tr>`:''};
   const head='<tr><th>分類</th><th>筆數</th><th>勝率</th><th>總損益</th><th>期望值</th><th>PF</th><th>平均R</th></tr>';
   const sopTs=ts.filter(x=>x.mode);
-  const tagList=['符合SOP','連招成立','回踩OB','FVG回踩','確認收線','不符SOP','追價','無連招','逆連招','停損用OB1','停損用ATR'];
+  const tagList=['符合SOP','連招成立','回踩OB','FVG回踩','確認收線','不符SOP','分批止盈','追價','無連招','逆連招','停損用OB1','停損用ATR'];
   h+=`<div class="card"><h3>SOP 紀律對照</h3><div style="overflow:auto"><table>${head}${row('完全符合 SOP',sopTs.filter(x=>x.sop))}${row('未完全符合',sopTs.filter(x=>!x.sop))}</table></div>`+
     `<p class="mut" style="font-size:12px;margin:8px 0 0">課程宣稱嚴格照做勝率約 60%（1:1）。上面「完全符合 SOP」那一列就是你自己的實測數字。</p></div>`;
   h+=`<div class="card"><h3>依進場條件（同一筆可有多個標籤）</h3><div style="overflow:auto"><table>${head}${tagList.map(t=>row(t,sopTs.filter(x=>x.tags.includes(t)))).join('')}</table></div></div>`;
@@ -1068,6 +1399,10 @@ function renderStats(){
 function cfgToForm(){
   $('#cSource').value=cfg.source;$('#cSym').value=cfg.sym;$('#cHist').value=cfg.hist;$('#cHtf').value=cfg.htf;$('#cPlay').value=cfg.play;
   $('#cUnit').value=cfg.unit;$('#cMaxU').value=cfg.maxU;$('#cFee').value=cfg.fee;$('#cSlMode').value=cfg.slMode;$('#cMode').value=cfg.mode;$('#cSlK').value=cfg.slK;$('#cRR').value=cfg.rr;$('#cConf').value=cfg.confirmFrom;$('#cOb2').checked=cfg.needOb2;$('#cFvg').checked=cfg.fvgZone;$('#cEng').checked=cfg.engulfExtra;
+  $('#cSwingLen').value=cfg.swingLen;$('#cMitSrc').value=cfg.mitSrc;$('#cUseFib').checked=cfg.useFib;$('#cFibStruct').value=cfg.fibStruct;$('#cFibTrend').checked=cfg.fibTrend;
+  $('#cOteHi').value=cfg.oteHi;$('#cOteLo').value=cfg.oteLo;$('#cBosBody').value=cfg.bosBody;$('#cFibExt').value=String(cfg.fibExt);$('#cFibSl').value=cfg.fibSl;$('#cFibExpire').value=cfg.fibExpire;
+  $('#cBiasFilter').checked=cfg.biasFilter;$('#cBiasTf').value=String(cfg.biasTf);$('#cPosMode').value=cfg.posMode;
+  $('#cLadder').checked=cfg.ladder;$('#cLadderStr').value=cfg.ladderStr;$('#cScaleIn').checked=cfg.scaleIn;$('#cFirstPct').value=cfg.firstPct;$('#cAddAt').value=cfg.addAt;$('#cAddExpire').value=cfg.addExpire;
   $('#cBlind').checked=cfg.blind;$('#cHint').checked=cfg.hint;
   $$('[data-layer]').forEach(e=>e.checked=!!cfg.layers[e.dataset.layer]);
   syncSource();
@@ -1078,7 +1413,13 @@ function formToCfg(){
   cfg.htf=parseHtf($('#cHtf').value).join(',')||'15,60,240';cfg.hist=Math.round(n('#cHist',150,50,400));cfg.play=Math.round(n('#cPlay',500,50,900));
   if(cfg.hist+cfg.play>1000)cfg.play=1000-cfg.hist;
   cfg.unit=n('#cUnit',1000,100,1e6);cfg.maxU=Math.round(n('#cMaxU',5,1,20));cfg.fee=n('#cFee',0.05,0,2);
-  cfg.mode=$('#cMode').value;cfg.slMode=$('#cSlMode').value;cfg.slK=n('#cSlK',1.5,0.3,20);cfg.rr=n('#cRR',1,0,20);cfg.confirmFrom=+$('#cConf').value;cfg.needOb2=$('#cOb2').checked;cfg.fvgZone=$('#cFvg').checked;cfg.ver=2;cfg.engulfExtra=$('#cEng').checked;cfg.blind=$('#cBlind').checked;saveCfg();
+  cfg.mode=$('#cMode').value;cfg.slMode=$('#cSlMode').value;cfg.slK=n('#cSlK',1.5,0.3,20);cfg.rr=n('#cRR',1,0,20);cfg.confirmFrom=+$('#cConf').value;cfg.needOb2=$('#cOb2').checked;cfg.fvgZone=$('#cFvg').checked;cfg.ver=2;cfg.engulfExtra=$('#cEng').checked;cfg.blind=$('#cBlind').checked;
+  cfg.swingLen=Math.round(n('#cSwingLen',50,10,200));cfg.mitSrc=$('#cMitSrc').value;cfg.useFib=$('#cUseFib').checked;cfg.fibStruct=$('#cFibStruct').value;cfg.fibTrend=$('#cFibTrend').checked;
+  cfg.oteHi=n('#cOteHi',0.618,0.3,0.95);cfg.oteLo=n('#cOteLo',0.786,0.4,1);if(cfg.oteLo<cfg.oteHi)[cfg.oteHi,cfg.oteLo]=[cfg.oteLo,cfg.oteHi];
+  cfg.bosBody=n('#cBosBody',0,0,10);cfg.fibExt=+$('#cFibExt').value;cfg.fibSl=$('#cFibSl').value;cfg.fibExpire=Math.round(n('#cFibExpire',60,5,300));
+  cfg.biasFilter=$('#cBiasFilter').checked;cfg.biasTf=+$('#cBiasTf').value;cfg.posMode=$('#cPosMode').value;
+  cfg.ladder=$('#cLadder').checked;cfg.ladderStr=parseLadder($('#cLadderStr').value).map(x=>x.join(':')).join(',')||DEF.ladderStr;
+  cfg.scaleIn=$('#cScaleIn').checked;cfg.firstPct=n('#cFirstPct',50,10,100);cfg.addAt=$('#cAddAt').value;cfg.addExpire=Math.round(n('#cAddExpire',10,1,100));saveCfg();
 }
 function syncSource(){
   const s=$('#cSource').value;$('#wrapSym').hidden=s!=='binance';$('#wrapCsv').hidden=s!=='csv';
