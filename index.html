@@ -104,6 +104,7 @@ tr.click{cursor:pointer}tr.click:hover,tr.sel{background:var(--panel2)}tr.sel td
         </label>
         <label class="f">起始已知 K 棒數（背景）<input type="number" id="cHist" min="50" max="400" step="10"></label>
         <label class="f">高週期 K 棒週期（分鐘，逗號分隔，最多 3 個；右側面板）<input type="text" id="cHtf" placeholder="15,60,240"></label>
+        <label class="f">高週期 K 棒每組顯示幾根（1～12）<input type="number" id="cHtfN" min="1" max="12"></label>
         <label class="f">訓練 K 棒數（最多 900）<input type="number" id="cPlay" min="50" max="900" step="50"></label>
       </div>
     </div>
@@ -288,7 +289,7 @@ const SYMS=['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','DOGEUSDT','ADAUSD
 const DEF={source:'binance',sym:'RANDOM',hist:150,play:500,view:90,unit:1000,maxU:5,fee:0.05,mode:'sop',slMode:'off',slK:1.5,rr:1,confirmFrom:2,needOb2:false,fvgZone:true,engulfExtra:false,ver:2,blind:true,hint:false,
   swingLen:50,mitSrc:'hl',useFib:true,fibStruct:'internal',fibTrend:true,oteHi:0.618,oteLo:0.786,bosBody:0,fibExt:1.272,fibSl:'A',fibExpire:60,
   biasFilter:false,biasTf:60,posMode:'hide',ladder:false,ladderStr:'1:30,2:30,3:20,4:10,5:10',scaleIn:false,firstPct:50,addAt:'half',addExpire:10,
-  htf:'15,60,240',layers:{struct:true,ob:true,fvg:true,liq:false,pd:false,swing:false,htf:true,bias:true}};
+  htf:'15,60,240',htfN:4,layers:{struct:true,ob:true,fvg:true,liq:false,pd:false,swing:false,htf:true,bias:true}};
 let cfg=(()=>{
   try{
     const saved=JSON.parse(localStorage.getItem(CKEY))||{},c=Object.assign({},DEF,saved);
@@ -746,10 +747,12 @@ const tfLabel=m=>m>=1440?'D':m>=60?(m/60)+'h':m+'m';
 const COL={up:'#26a69a',dn:'#ef5350',ob:'#2962ff',obTxt:'#6f93ff',grid:'#1b2430',txt:'#8493a5',bg:'#0d1117'};
 let hover=null,lastGeom=null;
 /* ---------- 高週期（HTF）K 棒：用 5 分 K 即時合成，只用到目前為止的資料 ---------- */
-const HTF_N=4,HTF_CW=7,HTF_GAP=3,HTF_GG=12,HTF_GW=HTF_N*HTF_CW+(HTF_N-1)*HTF_GAP;
+// 每組顯示的根數可調（1～12），根數多時自動把每根畫窄一點
+const HTF_GG=12;
+function htfGeom(){const n=Math.min(12,Math.max(1,cfg.htfN||4)),cw=n>8?4:n>5?5:7,gap=n>8?2:3;return{n,cw,gap,gw:n*cw+(n-1)*gap}}
 function parseHtf(str){return String(str||'').split(/[,\s，]+/).map(Number).filter(n=>n>=10&&n<=1440&&isFinite(n)).slice(0,3)}
 function tfName(m){return m%1440===0?(m/1440)+'D':m%60===0?(m/60)+'H':m+'m'}
-function htfPanelW(count){return 10+count*HTF_GW+(count-1)*HTF_GG+10}
+function htfPanelW(count){return 10+count*htfGeom().gw+(count-1)*HTF_GG+10}
 function fmtCd(ms){const t=Math.max(0,Math.round(ms/1000)),h=Math.floor(t/3600),m=Math.floor(t%3600/60),sc=t%60,p=x=>String(x).padStart(2,'0');return h?`${h}:${p(m)}:${p(sc)}`:`${p(m)}:${p(sc)}`}
 function htfCandles(cs,k,tfMin,n){
   const ms=tfMin*60000,out=[];let i=k;
@@ -761,6 +764,7 @@ function htfCandles(cs,k,tfMin,n){
   return out;
 }
 function drawHtfPanel(g,o,x0,top,bottom){
+  const {n:HTF_N,cw:HTF_CW,gap:HTF_GAP,gw:HTF_GW}=htfGeom();
   const W=htfPanelW(o.htf.length);
   g.save();
   g.fillStyle='rgba(130,150,180,.06)';g.fillRect(x0,top-22,W,bottom-top+22);
@@ -1397,7 +1401,7 @@ function renderStats(){
 
 /* ============================== 事件 ============================== */
 function cfgToForm(){
-  $('#cSource').value=cfg.source;$('#cSym').value=cfg.sym;$('#cHist').value=cfg.hist;$('#cHtf').value=cfg.htf;$('#cPlay').value=cfg.play;
+  $('#cSource').value=cfg.source;$('#cSym').value=cfg.sym;$('#cHist').value=cfg.hist;$('#cHtf').value=cfg.htf;$('#cHtfN').value=cfg.htfN;$('#cPlay').value=cfg.play;
   $('#cUnit').value=cfg.unit;$('#cMaxU').value=cfg.maxU;$('#cFee').value=cfg.fee;$('#cSlMode').value=cfg.slMode;$('#cMode').value=cfg.mode;$('#cSlK').value=cfg.slK;$('#cRR').value=cfg.rr;$('#cConf').value=cfg.confirmFrom;$('#cOb2').checked=cfg.needOb2;$('#cFvg').checked=cfg.fvgZone;$('#cEng').checked=cfg.engulfExtra;
   $('#cSwingLen').value=cfg.swingLen;$('#cMitSrc').value=cfg.mitSrc;$('#cUseFib').checked=cfg.useFib;$('#cFibStruct').value=cfg.fibStruct;$('#cFibTrend').checked=cfg.fibTrend;
   $('#cOteHi').value=cfg.oteHi;$('#cOteLo').value=cfg.oteLo;$('#cBosBody').value=cfg.bosBody;$('#cFibExt').value=String(cfg.fibExt);$('#cFibSl').value=cfg.fibSl;$('#cFibExpire').value=cfg.fibExpire;
@@ -1410,7 +1414,7 @@ function cfgToForm(){
 function formToCfg(){
   const n=(id,d,lo,hi)=>{const v=parseFloat($(id).value);return isFinite(v)?Math.min(hi,Math.max(lo,v)):d};
   cfg.source=$('#cSource').value;cfg.sym=$('#cSym').value;
-  cfg.htf=parseHtf($('#cHtf').value).join(',')||'15,60,240';cfg.hist=Math.round(n('#cHist',150,50,400));cfg.play=Math.round(n('#cPlay',500,50,900));
+  cfg.htf=parseHtf($('#cHtf').value).join(',')||'15,60,240';cfg.htfN=Math.round(n('#cHtfN',4,1,12));cfg.hist=Math.round(n('#cHist',150,50,400));cfg.play=Math.round(n('#cPlay',500,50,900));
   if(cfg.hist+cfg.play>1000)cfg.play=1000-cfg.hist;
   cfg.unit=n('#cUnit',1000,100,1e6);cfg.maxU=Math.round(n('#cMaxU',5,1,20));cfg.fee=n('#cFee',0.05,0,2);
   cfg.mode=$('#cMode').value;cfg.slMode=$('#cSlMode').value;cfg.slK=n('#cSlK',1.5,0.3,20);cfg.rr=n('#cRR',1,0,20);cfg.confirmFrom=+$('#cConf').value;cfg.needOb2=$('#cOb2').checked;cfg.fvgZone=$('#cFvg').checked;cfg.ver=2;cfg.engulfExtra=$('#cEng').checked;cfg.blind=$('#cBlind').checked;
