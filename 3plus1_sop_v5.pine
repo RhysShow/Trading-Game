@@ -591,25 +591,25 @@ bool sopConfirmed = sopOn and barstate.isconfirmed
 // 持倉中（前一筆的停損停利都還沒碰到）又出現新訊號時的處理
 int  posDir   = strategy.position_size > 0 ? 1 : strategy.position_size < 0 ? -1 : 0
 bool inTrade  = posDir != 0
-bool reverse  = inTrade and posDir != cDir and posMode == "反向訊號：平倉並反手"
-bool allowSig = not inTrade or reverse
+bool doRev  = inTrade and posDir != cDir and posMode == "反向訊號：平倉並反手"
+bool allowSig = not inTrade or doRev
 bool grayOnly = inTrade and not allowSig and posMode == "顯示為灰色（不進場）"
 bool sopEnter = sopConfirmed and allowSig
 // 盤中預覽：這根還沒收線但目前合格 → 先畫虛線標記；之後的每一跳都會重算，
 // 收線時若不合格，TradingView 會自動移除這根上一跳畫的標記
 if sopOn and not barstate.isconfirmed and liveMarks and allowSig
-    label.new(bar_index, cDir == 1 ? low : high, "預備" + (cDir == 1 ? " 做多" : " 做空") + (reverse ? "（反手）" : "") + "\n（未收線）",
+    label.new(bar_index, cDir == 1 ? low : high, "預備" + (cDir == 1 ? " 做多" : " 做空") + (doRev ? "（反手）" : "") + "\n（未收線）",
          style=cDir == 1 ? label.style_label_up : label.style_label_down,
          color=cDir == 1 ? color.new(color.teal, 70) : color.new(color.red, 70), textcolor=color.white, size=size.small)
     line.new(bar_index, slP, bar_index + 12, slP, color=color.new(color.red, 50), style=line.style_dotted)
     alert("3+1 預備訊號（尚未收線）：" + (cDir == 1 ? "做多 " : "做空 ") + syminfo.ticker + " " + str.tostring(close, format.mintick), alert.freq_once_per_bar)
 if sopEnter
-    alert("3+1 確認訊號：" + (reverse ? "平倉並反手 " : "") + (cDir == 1 ? "做多 " : "做空 ") + syminfo.ticker + " 進場 " + str.tostring(close, format.mintick) + " SL " + str.tostring(slP, format.mintick) + (na(tpP) ? "" : " TP " + str.tostring(tpP, format.mintick)), alert.freq_once_per_bar_close)
+    alert("3+1 確認訊號：" + (doRev ? "平倉並反手 " : "") + (cDir == 1 ? "做多 " : "做空 ") + syminfo.ticker + " 進場 " + str.tostring(close, format.mintick) + " SL " + str.tostring(slP, format.mintick) + (na(tpP) ? "" : " TP " + str.tostring(tpP, format.mintick)), alert.freq_once_per_bar_close)
 
 if sopEnter
     sigCount += 1
     if showLbl
-        label.new(bar_index, cDir == 1 ? low : high, "#" + str.tostring(sigCount) + (cDir == 1 ? " 做多" : " 做空") + (reverse ? "（反手）" : "") + "\n" + str.tostring(close, format.mintick),
+        label.new(bar_index, cDir == 1 ? low : high, "#" + str.tostring(sigCount) + (cDir == 1 ? " 做多" : " 做空") + (doRev ? "（反手）" : "") + "\n" + str.tostring(close, format.mintick),
              style=cDir == 1 ? label.style_label_up : label.style_label_down,
              color=cDir == 1 ? color.new(color.teal, 0) : color.new(color.red, 0), textcolor=color.white, size=size.small)
         line.new(bar_index, slP, bar_index + 12, slP, color=color.red, style=line.style_dashed)
