@@ -699,13 +699,12 @@ f_tfLabel(string tf) =>
     int sec = timeframe.in_seconds(tf)
     sec >= 86400 ? (sec == 86400 ? "D" : sec == 604800 ? "W" : str.tostring(sec / 86400, "#") + "D") : sec >= 3600 ? str.tostring(sec / 3600, "#") + "h" : str.tostring(sec / 60, "#") + "m"
 
-var table biasTb = table.new(biasPos == "右上" ? position.top_right : biasPos == "右下" ? position.bottom_right : biasPos == "左上" ? position.top_left : position.bottom_left, 4, 7, bgcolor=color.new(#1e222d, 10), border_color=color.new(#363a45, 0), border_width=1)
+var table biasTb = table.new(biasPos == "右上" ? position.top_right : biasPos == "右下" ? position.bottom_right : biasPos == "左上" ? position.top_left : position.bottom_left, 3, 7, bgcolor=color.new(#1e222d, 10), border_color=color.new(#363a45, 0), border_width=1)
 if showBias and barstate.islast
     color hdr = color.new(#d1d4dc, 0)
     table.cell(biasTb, 0, 0, "時區", text_color=hdr, text_size=size.small)
     table.cell(biasTb, 1, 0, "偏見", text_color=hdr, text_size=size.small)
-    table.cell(biasTb, 2, 0, "目標（前高／前低）", text_color=hdr, text_size=size.small)
-    table.cell(biasTb, 3, 0, "達成", text_color=hdr, text_size=size.small)
+    table.cell(biasTb, 2, 0, "達成", text_color=hdr, text_size=size.small)
     array<string> tfs = array.from(bTf1, bTf2, bTf3, bTf4, bTf5)
     array<int>    bss = array.from(bs1, bs2, bs3, bs4, bs5)
     array<float>  bts = array.from(bt1, bt2, bt3, bt4, bt5)
@@ -723,9 +722,8 @@ if showBias and barstate.islast
         color lamp0 = lower or na(bv) or bv == 0 ? color.gray : bv == 1 ? #26a69a : #ef5350
         color lamp = fb ? color.new(lamp0, 45) : lamp0
         table.cell(biasTb, 0, r + 1, f_tfLabel(tfr), text_color=hdr, text_size=size.small)
-        table.cell(biasTb, 1, r + 1, fb ? "●*" : "●", text_color=lamp, text_size=size.large)
-        table.cell(biasTb, 2, r + 1, lower ? "比圖表小" : na(array.get(bts, r)) ? "—" : str.tostring(array.get(bts, r), format.mintick), text_color=lamp, text_size=size.small)
-        table.cell(biasTb, 3, r + 1, lower ? "" : array.get(bhs, r) ? "✓" : "…", text_color=array.get(bhs, r) ? #26a69a : color.gray, text_size=size.small)
-    table.cell(biasTb, 2, 6, anyFb ? "* 沿用前一組的趨勢" : "", text_color=color.gray, text_size=size.tiny)
+        table.cell(biasTb, 1, r + 1, fb ? "●*" : "●", text_color=lamp, text_size=size.normal, tooltip=lower ? "比圖表小，無法判斷" : na(array.get(bts, r)) ? "" : "目標：" + str.tostring(array.get(bts, r), format.mintick))
+        table.cell(biasTb, 2, r + 1, lower ? "" : array.get(bhs, r) ? "✓" : "…", text_color=array.get(bhs, r) ? #26a69a : color.gray, text_size=size.small)
+    table.cell(biasTb, 1, 6, anyFb ? "*沿用前組" : "", text_color=color.gray, text_size=size.tiny)
 
 plot(array.get(trArr, 0), "內部結構方向(1多/-1空)", color=color.gray, display=display.data_window)
