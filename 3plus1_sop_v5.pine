@@ -69,6 +69,9 @@ bTf5 = input.timeframe("15", "週期 5", group=gB)
 biasFilter = input.bool(false, "只做與指定週期偏見同方向的 3+1 訊號", group=gB)
 bTfF = input.timeframe("60", "過濾用的週期", group=gB)
 
+// ---- 持倉中的新訊號 ----
+posMode = input.string("隱藏（維持原部位）", "持倉中又出現新的 3+1 訊號時", options=["隱藏（維持原部位）", "顯示為灰色（不進場）", "反向訊號：平倉並反手"], group="訊號顯示")
+
 // 一組 K 棒的偏見：較舊的一根 = k+1、較新的一根 = k（0 = 第一根開收相同，無法判斷）
 f_pair(int k) =>
     close[k + 1] > open[k + 1] ? (close[k] > high[k + 1] ? 1 : -1) : close[k + 1] < open[k + 1] ? (close[k] < low[k + 1] ? -1 : 1) : 0
@@ -585,29 +588,40 @@ if armed
 bool sopOn = goSig and useSop and (not biasFilter or bsF == cDir)
 // bfF：過濾用週期是否沿用前一組判斷（僅供參考）
 bool sopConfirmed = sopOn and barstate.isconfirmed
+// 持倉中（前一筆的停損停利都還沒碰到）又出現新訊號時的處理
+int  posDir   = strategy.position_size > 0 ? 1 : strategy.position_size < 0 ? -1 : 0
+bool inTrade  = posDir != 0
+bool reverse  = inTrade and posDir != cDir and posMode == "反向訊號：平倉並反手"
+bool allowSig = not inTrade or reverse
+bool grayOnly = inTrade and not allowSig and posMode == "顯示為灰色（不進場）"
+bool sopEnter = sopConfirmed and allowSig
 // 盤中預覽：這根還沒收線但目前合格 → 先畫虛線標記；之後的每一跳都會重算，
 // 收線時若不合格，TradingView 會自動移除這根上一跳畫的標記
-if sopOn and not barstate.isconfirmed and liveMarks
-    label.new(bar_index, cDir == 1 ? low : high, "預備" + (cDir == 1 ? " 做多" : " 做空") + "\n（未收線）",
+if sopOn and not barstate.isconfirmed and liveMarks and allowSig
+    label.new(bar_index, cDir == 1 ? low : high, "預備" + (cDir == 1 ? " 做多" : " 做空") + (reverse ? "（反手）" : "") + "\n（未收線）",
          style=cDir == 1 ? label.style_label_up : label.style_label_down,
          color=cDir == 1 ? color.new(color.teal, 70) : color.new(color.red, 70), textcolor=color.white, size=size.small)
     line.new(bar_index, slP, bar_index + 12, slP, color=color.new(color.red, 50), style=line.style_dotted)
     alert("3+1 預備訊號（尚未收線）：" + (cDir == 1 ? "做多 " : "做空 ") + syminfo.ticker + " " + str.tostring(close, format.mintick), alert.freq_once_per_bar)
-if sopConfirmed
-    alert("3+1 確認訊號：" + (cDir == 1 ? "做多 " : "做空 ") + syminfo.ticker + " 進場 " + str.tostring(close, format.mintick) + " SL " + str.tostring(slP, format.mintick) + (na(tpP) ? "" : " TP " + str.tostring(tpP, format.mintick)), alert.freq_once_per_bar_close)
+if sopEnter
+    alert("3+1 確認訊號：" + (reverse ? "平倉並反手 " : "") + (cDir == 1 ? "做多 " : "做空 ") + syminfo.ticker + " 進場 " + str.tostring(close, format.mintick) + " SL " + str.tostring(slP, format.mintick) + (na(tpP) ? "" : " TP " + str.tostring(tpP, format.mintick)), alert.freq_once_per_bar_close)
 
-if sopConfirmed
+if sopEnter
     sigCount += 1
     if showLbl
-        label.new(bar_index, cDir == 1 ? low : high, "#" + str.tostring(sigCount) + (cDir == 1 ? " 做多" : " 做空") + "\n" + str.tostring(close, format.mintick),
+        label.new(bar_index, cDir == 1 ? low : high, "#" + str.tostring(sigCount) + (cDir == 1 ? " 做多" : " 做空") + (reverse ? "（反手）" : "") + "\n" + str.tostring(close, format.mintick),
              style=cDir == 1 ? label.style_label_up : label.style_label_down,
              color=cDir == 1 ? color.new(color.teal, 0) : color.new(color.red, 0), textcolor=color.white, size=size.small)
         line.new(bar_index, slP, bar_index + 12, slP, color=color.red, style=line.style_dashed)
         if not na(tpP)
             line.new(bar_index, tpP, bar_index + 12, tpP, color=color.teal, style=line.style_dashed)
-    if strategy.position_size == 0
-        strategy.entry("SOP", cDir == 1 ? strategy.long : strategy.short)
-        strategy.exit("SOP出場", "SOP", stop=slP, limit=tpP)
+    // 空手直接進場；反手時 strategy.entry 會先平掉反向部位再開新倉
+    strategy.entry("SOP", cDir == 1 ? strategy.long : strategy.short)
+    strategy.exit("SOP出場", "SOP", stop=slP, limit=tpP)
+else if sopConfirmed and grayOnly and showLbl
+    label.new(bar_index, cDir == 1 ? low : high, "持倉中" + (cDir == 1 ? " 做多" : " 做空") + "\n（不進場）",
+         style=cDir == 1 ? label.style_label_up : label.style_label_down,
+         color=color.new(color.gray, 40), textcolor=color.white, size=size.tiny)
 
 // ---------- 斐波那契 OTE：BOS 後在新一段畫斐波那契，找與 FVG 重疊的進場框，限價等回踩 ----------
 bool fibFilled = false
@@ -649,7 +663,7 @@ if fDir != 0
         strategy.cancel("FIB")
         fDir := 0
     else if barstate.isconfirmed
-        if not na(eTop) and not inPos and not sopConfirmed and useFib
+        if not na(eTop) and not inPos and not sopEnter and useFib
             float ePx = fDir == 1 ? eTop : eBot
             float fSl = fibSl == "進場框之外" ? (fDir == 1 ? eBot : eTop) : fA
             float fTp = ePx + fDir * fibExt * leg2
