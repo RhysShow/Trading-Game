@@ -1,15 +1,29 @@
 //@version=5
-// HTF 蠟燭：把較高週期（預設 15 分、1 小時、4 小時）最近幾根 K 棒縮小，畫在目前圖表的右側空白處
+// HTF 蠟燭：把比目前圖表大的 3 個週期，最近幾根 K 棒縮小，畫在目前圖表的右側空白處
+// 預設「依圖表週期自動選擇」：5 分圖 → 15m / 1H / 4H；15 分圖 → 1H / 4H / 1D；60 分圖 → 4H / 1D / 1W
 // 每組上方顯示週期名稱、目前這根的方向（▲ 收漲 / ▼ 收跌）與距離收盤的倒數計時
 // 空心（半透明）的那根是「還沒收盤」的目前 K 棒
 indicator("HTF 蠟燭", overlay=true, max_boxes_count=100, max_lines_count=100, max_labels_count=60)
 
-tf1  = input.timeframe("15", "週期 1")
-tf2  = input.timeframe("60", "週期 2")
-tf3  = input.timeframe("240", "週期 3")
+autoTf = input.bool(true, "依圖表週期自動選擇（只顯示比圖表大的週期）")
+tfIn1 = input.timeframe("15", "週期 1（關閉自動時使用）")
+tfIn2 = input.timeframe("60", "週期 2（關閉自動時使用）")
+tfIn3 = input.timeframe("240", "週期 3（關閉自動時使用）")
 use1 = input.bool(true, "顯示週期 1")
-use2 = input.bool(true, "顯示週期 2")
-use3 = input.bool(true, "顯示週期 3")
+use2In = input.bool(true, "顯示週期 2")
+use3In = input.bool(true, "顯示週期 3")
+
+// 依圖表週期挑出比它大的三個週期（15m、1H、4H、1D、1W 依序往上取）
+int chSec = timeframe.in_seconds()
+string a1 = chSec < 900 ? "15" : chSec < 3600 ? "60" : chSec < 14400 ? "240" : chSec < 86400 ? "D" : "W"
+string a2 = chSec < 900 ? "60" : chSec < 3600 ? "240" : chSec < 14400 ? "D" : "W"
+string a3 = chSec < 900 ? "240" : chSec < 3600 ? "D" : "W"
+tf1 = autoTf ? a1 : tfIn1
+tf2 = autoTf ? a2 : tfIn2
+tf3 = autoTf ? a3 : tfIn3
+// 自動模式下，週期重複（例如 4H 圖以上只剩 1W）就不重複顯示
+use2 = use2In and not (autoTf and tf2 == tf1)
+use3 = use3In and not (autoTf and (tf3 == tf2 or tf3 == tf1))
 nShow = input.int(4, "每組顯示幾根（含目前這根）", minval=1, maxval=4)
 cw    = input.int(3, "每根寬度（以圖表 K 棒數計）", minval=1, maxval=6)
 gap   = input.int(1, "每根之間的間距", minval=0, maxval=4)
