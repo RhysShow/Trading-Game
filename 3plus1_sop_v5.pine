@@ -1,6 +1,9 @@
 //@version=5
 // 3+1 SOP 解答版 v5：v4 + 盤中預覽訊號（可開關）+ 斐波那契 OTE 進場模型（可開關）
 // 結構與訂單塊（OB）的判斷沿用 v4，和 LuxAlgo「Smart Money Concepts」相同的設計
+// 右上角「偏見燈號」：用各週期最近兩根已收盤的 K 棒判斷這一根的方向（綠燈偏多、紅燈偏空）
+//   第一根綠 K：第二根收盤高於第一根最高點 → 偏多（目標：第二根的高點），否則偏空（目標：第二根的低點）
+//   第一根紅 K：第二根收盤低於第一根最低點 → 偏空（目標：第二根的低點），否則偏多（目標：第二根的高點）
 // 適用週期：任何週期都可以（5 分、15 分、60 分…），所有判斷都以「目前圖表的 K 棒」計算。
 //   注意：以 K 棒數計算的設定（Swing 結構長度、回踩確認視窗、FIB 等待根數）在不同週期代表的時間不同，
 //   例如「等 60 根」在 5 分圖是 5 小時、在 60 分圖是 2.5 天，可依週期自行調整。
@@ -53,6 +56,32 @@ fibSl     = input.string("A 點（綠框低點／高點）之外", "停損位置
 fibExpire = input.int(60, "BOS 後最多等幾根 K 棒回到進場框", minval=5, maxval=300, group="斐波那契 OTE")
 showFib   = input.bool(true, "顯示斐波那契框（綠框 OTE／進場框／目標區）", group="斐波那契 OTE")
 int fibS  = fibStruct == "Swing 結構" ? 1 : 0
+
+// ---- 偏見燈號 ----
+gB = "偏見燈號"
+showBias = input.bool(true, "顯示右上角偏見燈號", group=gB)
+biasPos  = input.string("右上", "燈號位置", options=["右上", "右下", "左上", "左下"], group=gB)
+bTf1 = input.timeframe("D", "週期 1", group=gB)
+bTf2 = input.timeframe("240", "週期 2", group=gB)
+bTf3 = input.timeframe("60", "週期 3", group=gB)
+bTf4 = input.timeframe("30", "週期 4", group=gB)
+bTf5 = input.timeframe("15", "週期 5", group=gB)
+biasFilter = input.bool(false, "只做與指定週期偏見同方向的 3+1 訊號", group=gB)
+bTfF = input.timeframe("60", "過濾用的週期", group=gB)
+
+// 用該週期「最近兩根已收盤」的 K 棒判斷目前這一根的偏見；回傳 [方向, 目標價, 目前這根是否已碰到目標]
+f_bias() =>
+    int b = close[2] > open[2] ? (close[1] > high[2] ? 1 : -1) : close[2] < open[2] ? (close[1] < low[2] ? -1 : 1) : 0
+    float tgt = b == 1 ? high[1] : b == -1 ? low[1] : na
+    bool hit = b == 1 ? high >= high[1] : b == -1 ? low <= low[1] : false
+    [b, tgt, hit]
+
+[bs1, bt1, bh1] = request.security(syminfo.tickerid, bTf1, f_bias(), lookahead=barmerge.lookahead_on)
+[bs2, bt2, bh2] = request.security(syminfo.tickerid, bTf2, f_bias(), lookahead=barmerge.lookahead_on)
+[bs3, bt3, bh3] = request.security(syminfo.tickerid, bTf3, f_bias(), lookahead=barmerge.lookahead_on)
+[bs4, bt4, bh4] = request.security(syminfo.tickerid, bTf4, f_bias(), lookahead=barmerge.lookahead_on)
+[bs5, bt5, bh5] = request.security(syminfo.tickerid, bTf5, f_bias(), lookahead=barmerge.lookahead_on)
+[bsF, btF, bhF] = request.security(syminfo.tickerid, bTfF, f_bias(), lookahead=barmerge.lookahead_on)
 
 color cBull = #089981
 color cBear = #F23645
@@ -543,7 +572,7 @@ if armed
                     cUsed := true
                     cFirst := -1
 
-bool sopOn = goSig and useSop
+bool sopOn = goSig and useSop and (not biasFilter or bsF == cDir)
 bool sopConfirmed = sopOn and barstate.isconfirmed
 // 盤中預覽：這根還沒收線但目前合格 → 先畫虛線標記；之後的每一跳都會重算，
 // 收線時若不合格，TradingView 會自動移除這根上一跳畫的標記
@@ -654,4 +683,31 @@ plotshape(showEv and evBOSbBad, "BOS↑未過CH高", shape.xcross, location.belo
 plotshape(showEv and evBOSsBad, "BOS↓未過CH低", shape.xcross, location.abovebar, color.gray, size=size.tiny)
 
 // 不顯示的輔助線（確保腳本一定有輸出，避免「至少要有一個 plot / strategy」的編譯錯誤）
+// ---------- 偏見燈號表格 ----------
+f_tfLabel(string tf) =>
+    int sec = timeframe.in_seconds(tf)
+    sec >= 86400 ? (sec == 86400 ? "D" : sec == 604800 ? "W" : str.tostring(sec / 86400, "#") + "D") : sec >= 3600 ? str.tostring(sec / 3600, "#") + "h" : str.tostring(sec / 60, "#") + "m"
+
+var table biasTb = table.new(biasPos == "右上" ? position.top_right : biasPos == "右下" ? position.bottom_right : biasPos == "左上" ? position.top_left : position.bottom_left, 4, 6, bgcolor=color.new(#1e222d, 10), border_color=color.new(#363a45, 0), border_width=1)
+if showBias and barstate.islast
+    color hdr = color.new(#d1d4dc, 0)
+    table.cell(biasTb, 0, 0, "時區", text_color=hdr, text_size=size.small)
+    table.cell(biasTb, 1, 0, "偏見", text_color=hdr, text_size=size.small)
+    table.cell(biasTb, 2, 0, "目標（前高／前低）", text_color=hdr, text_size=size.small)
+    table.cell(biasTb, 3, 0, "達成", text_color=hdr, text_size=size.small)
+    array<string> tfs = array.from(bTf1, bTf2, bTf3, bTf4, bTf5)
+    array<int>    bss = array.from(bs1, bs2, bs3, bs4, bs5)
+    array<float>  bts = array.from(bt1, bt2, bt3, bt4, bt5)
+    array<bool>   bhs = array.from(bh1, bh2, bh3, bh4, bh5)
+    int chartSec = timeframe.in_seconds()
+    for r = 0 to 4
+        string tfr = array.get(tfs, r)
+        bool lower = timeframe.in_seconds(tfr) < chartSec
+        int bv = array.get(bss, r)
+        color lamp = lower or na(bv) or bv == 0 ? color.gray : bv == 1 ? #26a69a : #ef5350
+        table.cell(biasTb, 0, r + 1, f_tfLabel(tfr), text_color=hdr, text_size=size.small)
+        table.cell(biasTb, 1, r + 1, "●", text_color=lamp, text_size=size.large)
+        table.cell(biasTb, 2, r + 1, lower ? "比圖表小" : na(array.get(bts, r)) ? "—" : str.tostring(array.get(bts, r), format.mintick), text_color=lamp, text_size=size.small)
+        table.cell(biasTb, 3, r + 1, lower ? "" : array.get(bhs, r) ? "✓" : "…", text_color=array.get(bhs, r) ? #26a69a : color.gray, text_size=size.small)
+
 plot(array.get(trArr, 0), "內部結構方向(1多/-1空)", color=color.gray, display=display.data_window)
