@@ -15,12 +15,12 @@ use3In = input.bool(true, "顯示週期 3")
 
 // 依圖表週期挑出比它大的三個週期（15m、1H、4H、1D、1W 依序往上取）
 int chSec = timeframe.in_seconds()
-string a1 = chSec < 900 ? "15" : chSec < 3600 ? "60" : chSec < 14400 ? "240" : chSec < 86400 ? "D" : "W"
-string a2 = chSec < 900 ? "60" : chSec < 3600 ? "240" : chSec < 14400 ? "D" : "W"
-string a3 = chSec < 900 ? "240" : chSec < 3600 ? "D" : "W"
-tf1 = autoTf ? a1 : tfIn1
-tf2 = autoTf ? a2 : tfIn2
-tf3 = autoTf ? a3 : tfIn3
+string autoT1 = chSec < 900 ? "15" : chSec < 3600 ? "60" : chSec < 14400 ? "240" : chSec < 86400 ? "D" : "W"
+string autoT2 = chSec < 900 ? "60" : chSec < 3600 ? "240" : chSec < 14400 ? "D" : "W"
+string autoT3 = chSec < 900 ? "240" : chSec < 3600 ? "D" : "W"
+tf1 = autoTf ? autoT1 : tfIn1
+tf2 = autoTf ? autoT2 : tfIn2
+tf3 = autoTf ? autoT3 : tfIn3
 // 自動模式下，週期重複（例如 4H 圖以上只剩 1W）就不重複顯示
 use2 = use2In and not (autoTf and tf2 == tf1)
 use3 = use3In and not (autoTf and (tf3 == tf2 or tf3 == tf1))
