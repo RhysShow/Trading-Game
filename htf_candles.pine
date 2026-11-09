@@ -3,7 +3,9 @@
 // 預設「依圖表週期自動選擇」：5 分圖 → 15m / 1H / 4H；15 分圖 → 1H / 4H / 1D；60 分圖 → 4H / 1D / 1W
 // 每組上方顯示週期名稱、目前這根的方向（▲ 收漲 / ▼ 收跌）與距離收盤的倒數計時
 // 空心（半透明）的那根是「還沒收盤」的目前 K 棒
-indicator("HTF 蠟燭", overlay=true, max_boxes_count=100, max_lines_count=100, max_labels_count=60)
+// 大週期 K 棒直接用目前圖表的 K 棒合成（不用 request.security），所以每組可以顯示到 12 根；
+// 圖表載入的歷史要夠長（例如 5 分圖顯示 12 根日線，需要約 12 天的 5 分 K）
+indicator("HTF 蠟燭", overlay=true, max_boxes_count=100, max_lines_count=100, max_labels_count=60, max_bars_back=500)
 
 autoTf = input.bool(true, "依圖表週期自動選擇（只顯示比圖表大的週期）")
 tfIn1 = input.timeframe("15", "週期 1（關閉自動時使用）")
@@ -24,17 +26,13 @@ tf3 = autoTf ? autoT3 : tfIn3
 // 自動模式下，週期重複（例如 4H 圖以上只剩 1W）就不重複顯示
 use2 = use2In and not (autoTf and tf2 == tf1)
 use3 = use3In and not (autoTf and (tf3 == tf2 or tf3 == tf1))
-nShow = input.int(4, "每組顯示幾根（含目前這根）", minval=1, maxval=4)
+nShow = input.int(4, "每組顯示幾根（含目前這根，最多 12）", minval=1, maxval=12)
 cw    = input.int(3, "每根寬度（以圖表 K 棒數計）", minval=1, maxval=6)
 gap   = input.int(1, "每根之間的間距", minval=0, maxval=4)
 gg    = input.int(4, "每組之間的間距", minval=1, maxval=15)
 offs  = input.int(6, "和最新 K 棒的距離", minval=1, maxval=40)
 upCol = input.color(#089981, "上漲顏色")
 dnCol = input.color(#F23645, "下跌顏色")
-
-// 在高週期內取最近 4 根（0 = 目前尚未收盤的那根）
-f_fetch() =>
-    [open, high, low, close, open[1], high[1], low[1], close[1], open[2], high[2], low[2], close[2], open[3], high[3], low[3], close[3]]
 
 f_name(string tf) =>
     int sec = timeframe.in_seconds(tf)
@@ -49,9 +47,38 @@ f_cd(int ms) =>
     string s2 = (ss < 10 ? "0" : "") + str.tostring(ss)
     hh > 0 ? str.tostring(hh) + ":" + m2 + ":" + s2 : m2 + ":" + s2
 
-[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15] = request.security(syminfo.tickerid, tf1, f_fetch(), lookahead=barmerge.lookahead_on)
-[b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15] = request.security(syminfo.tickerid, tf2, f_fetch(), lookahead=barmerge.lookahead_on)
-[c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15] = request.security(syminfo.tickerid, tf3, f_fetch(), lookahead=barmerge.lookahead_on)
+// ---------- 用圖表 K 棒合成大週期 K 棒，每個週期保留最近 12 根 ----------
+// 三個週期的資料依序放在同一組陣列：索引 = 週期序號 * 12 + 第幾根（0 = 最舊）
+var int MAXN = 12
+var array<float> candO = array.new_float(36, na)
+var array<float> candH = array.new_float(36, na)
+var array<float> candL = array.new_float(36, na)
+var array<float> candC = array.new_float(36, na)
+var array<int>   candN = array.new_int(3, 0)        // 每個週期目前存了幾根
+
+array<bool> newBar = array.from(timeframe.change(tf1), timeframe.change(tf2), timeframe.change(tf3))
+for g = 0 to 2
+    int n = array.get(candN, g)
+    int base = g * MAXN
+    if array.get(newBar, g) or n == 0
+        // 新的一根大週期 K 棒：滿了就把最舊的往前擠掉
+        if n == MAXN
+            for i = 0 to MAXN - 2
+                array.set(candO, base + i, array.get(candO, base + i + 1))
+                array.set(candH, base + i, array.get(candH, base + i + 1))
+                array.set(candL, base + i, array.get(candL, base + i + 1))
+                array.set(candC, base + i, array.get(candC, base + i + 1))
+            n := MAXN - 1
+        array.set(candO, base + n, open)
+        array.set(candH, base + n, high)
+        array.set(candL, base + n, low)
+        array.set(candC, base + n, close)
+        array.set(candN, g, n + 1)
+    else
+        int j = base + n - 1
+        array.set(candH, j, math.max(array.get(candH, j), high))
+        array.set(candL, j, math.min(array.get(candL, j), low))
+        array.set(candC, j, close)
 
 int cl1 = time_close(tf1)
 int cl2 = time_close(tf2)
@@ -73,41 +100,37 @@ if barstate.islast
     array.clear(lns)
     array.clear(lbs)
 
-    array<float> d = array.new_float()
-    array.concat(d, array.from(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15))
-    array.concat(d, array.from(b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15))
-    array.concat(d, array.from(c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15))
     array<string> names = array.from(f_name(tf1), f_name(tf2), f_name(tf3))
     array<int> closes = array.from(cl1, cl2, cl3)
     array<bool> uses = array.from(use1, use2, use3)
 
     int slot = 0
     for g = 0 to 2
-        if array.get(uses, g)
-            int base = g * 16
+        int n = array.get(candN, g)
+        if array.get(uses, g) and n > 0
+            int base = g * MAXN
+            int show = math.min(nShow, n)
             int x0 = bar_index + offs + slot * (nShow * (cw + gap) + gg)
             slot += 1
             float topP = -1e18
-            for i = 0 to nShow - 1
-                int j = nShow - 1 - i
-                float o = array.get(d, base + j * 4)
-                float h = array.get(d, base + j * 4 + 1)
-                float l = array.get(d, base + j * 4 + 2)
-                float c = array.get(d, base + j * 4 + 3)
-                if not na(h)
-                    topP := math.max(topP, h)
-                    int xl = x0 + i * (cw + gap)
-                    color col = c >= o ? upCol : dnCol
-                    bool forming = j == 0
-                    array.push(lns, line.new(xl + int(cw / 2), h, xl + int(cw / 2), l, color=col))
-                    array.push(bxs, box.new(xl, math.max(o, c), xl + cw, math.min(o, c), border_color=col, bgcolor=forming ? color.new(col, 70) : col))
-            if topP > -1e17
-                float oNow = array.get(d, base)
-                float cNow = array.get(d, base + 3)
-                bool upNow = cNow >= oNow
-                int remain = array.get(closes, g) - timenow
-                string cd = remain > 0 ? f_cd(remain) : "--"
-                array.push(lbs, label.new(x0 + int((nShow * (cw + gap)) / 2), topP, array.get(names, g) + (upNow ? " ▲" : " ▼") + "\n(" + cd + ")",
-                     color=color.new(color.white, 100), textcolor=upNow ? upCol : dnCol, style=label.style_label_down, size=size.small))
+            for i = 0 to show - 1
+                int j = base + n - show + i          // 由舊到新
+                float o = array.get(candO, j)
+                float h = array.get(candH, j)
+                float l = array.get(candL, j)
+                float c = array.get(candC, j)
+                topP := math.max(topP, h)
+                int xl = x0 + (nShow - show + i) * (cw + gap)
+                color col = c >= o ? upCol : dnCol
+                bool forming = i == show - 1
+                array.push(lns, line.new(xl + int(cw / 2), h, xl + int(cw / 2), l, color=col))
+                array.push(bxs, box.new(xl, math.max(o, c), xl + cw, math.min(o, c), border_color=col, bgcolor=forming ? color.new(col, 70) : col))
+            float oNow = array.get(candO, base + n - 1)
+            float cNow = array.get(candC, base + n - 1)
+            bool upNow = cNow >= oNow
+            int remain = array.get(closes, g) - timenow
+            string cd = remain > 0 ? f_cd(remain) : "--"
+            array.push(lbs, label.new(x0 + int((nShow * (cw + gap)) / 2), topP, array.get(names, g) + (upNow ? " ▲" : " ▼") + "\n(" + cd + ")",
+                 color=color.new(color.white, 100), textcolor=upNow ? upCol : dnCol, style=label.style_label_down, size=size.small))
 
 plot(close, "close", display=display.none)
