@@ -726,7 +726,6 @@ if showBias and barstate.islast
         table.cell(biasTb, 1, r + 1, fb ? "●*" : "●", text_color=lamp, text_size=size.large)
         table.cell(biasTb, 2, r + 1, lower ? "比圖表小" : na(array.get(bts, r)) ? "—" : str.tostring(array.get(bts, r), format.mintick), text_color=lamp, text_size=size.small)
         table.cell(biasTb, 3, r + 1, lower ? "" : array.get(bhs, r) ? "✓" : "…", text_color=array.get(bhs, r) ? #26a69a : color.gray, text_size=size.small)
-    table.cell(biasTb, 0, 6, anyFb ? "* 最近一組無法判斷，沿用前一組的趨勢" : "", text_color=color.gray, text_size=size.tiny)
-    table.merge_cells(biasTb, 0, 6, 3, 6)
+    table.cell(biasTb, 2, 6, anyFb ? "* 沿用前一組的趨勢" : "", text_color=color.gray, text_size=size.tiny)
 
 plot(array.get(trArr, 0), "內部結構方向(1多/-1空)", color=color.gray, display=display.data_window)
