@@ -90,6 +90,17 @@ spR1 = input.float(1.0, "突刺 TP1（R）", minval=0.1, step=0.1, inline="sp", 
 spR2 = input.float(1.5, "TP2", minval=0.1, step=0.1, inline="sp", group=gS)
 spR3 = input.float(2.0, "TP3", minval=0.1, step=0.1, inline="sp", group=gS)
 // 突刺進場的出場：TP1、TP2 各平 1/3，TP3 平掉剩下的；停損在 OB 遠端邊界之外
+// ---- 突刺進場的 SMC／ICT 過濾（回測後加入；建議一次只改一項比較結果） ----
+gF = "突刺進場過濾"
+spBuf     = input.float(0.25, "停損再往 OB 外加幾倍 ATR（0 = 剛好在 OB 邊緣）", minval=0, step=0.05, group=gF)
+spMinRisk = input.float(0.25, "停損距離至少佔價格幾 %（太窄時手續費吃掉獲利；0 = 不限）", minval=0, step=0.05, group=gF)
+spBias    = input.bool(true, "要求大週期偏見同方向", group=gF)
+spBiasTf  = input.timeframe("60", "偏見週期", group=gF)
+spPD      = input.bool(true, "做多只在折價區、做空只在溢價區（Swing 區間 50% 為界）", group=gF)
+spDisp    = input.bool(true, "OB 之後要有位移：突破那段留下同向 FVG", group=gF)
+spSess    = input.bool(false, "只在 Kill Zone 時段進場", group=gF)
+spSessStr = input.session("0700-1000,1230-1530", "Kill Zone 時段（UTC，預設倫敦開盤與紐約開盤）", group=gF)
+spWick    = input.bool(false, "突刺 K 棒的影線要夠長（刺入那側影線 ≥ 整根的 40%）", group=gF)
 // TP2、TP3 只是參考價位，實際停利仍以 TP1 出場
 
 posMode = input.string("隱藏（維持原部位）", "持倉中又出現新的 3+1 訊號時", options=["隱藏（維持原部位）", "顯示為灰色（不進場）", "反向訊號：平倉並反手"], group="訊號顯示")
@@ -117,6 +128,7 @@ f_bias() =>
 [bs4, bt4, bh4, bf4] = request.security(syminfo.tickerid, bTf4, f_bias(), lookahead=barmerge.lookahead_on)
 [bs5, bt5, bh5, bf5] = request.security(syminfo.tickerid, bTf5, f_bias(), lookahead=barmerge.lookahead_on)
 [bsF, btF, bhF, bfF] = request.security(syminfo.tickerid, bTfF, f_bias(), lookahead=barmerge.lookahead_on)
+[bsP, btP, bhP, bfP] = request.security(syminfo.tickerid, spBiasTf, f_bias(), lookahead=barmerge.lookahead_on)
 
 color cBull = #089981
 color cBear = #F23645
@@ -176,6 +188,7 @@ var array<box>   obBox = array.new<box>()
 var array<bool>  obSw  = array.new_bool()     // 是否為掃蕩型 OB
 var array<bool>  obTch = array.new_bool()     // 是否已被回踩過（只有第一次回踩能觸發突刺進場）
 var array<int>   obAt  = array.new_int()      // 建立的 K 棒
+var array<bool>  obDisp = array.new_bool()    // 形成後是否留下同向 FVG（位移）
 // 內部結構的擺動點紀錄（判斷 OB 是否掃過前低／前高）
 var array<float> ivLoLv = array.new_float()
 var array<int>   ivLoBar = array.new_int()
@@ -405,12 +418,21 @@ for s = 0 to 1
                 array.remove(obSw, 0)
                 array.remove(obTch, 0)
                 array.remove(obAt, 0)
+                array.remove(obDisp, 0)
             array.push(obDir, 1)
             array.push(obHi, oHiU)
             array.push(obLo, oLoU)
+            // 位移：OB 之後到突破這根之間，有沒有留下多方 FVG
+            bool dpU = false
+            if bar_index >= mi + 2
+                for q = mi + 2 to bar_index
+                    if array.get(rawL, q) > array.get(rawH, q - 2)
+                        dpU := true
+                        break
             array.push(obSw, swU)
             array.push(obTch, false)
             array.push(obAt, bar_index)
+            array.push(obDisp, dpU)
             if showZones
                 bool hq = swU and showSweep
                 array.push(obBox, box.new(mi, oHiU, bar_index, oLoU, border_color=hq ? color.new(#3179f5, 0) : cNone, border_width=hq ? 2 : 1, bgcolor=hq ? color.new(#3179f5, 65) : cObBull, text=hq ? "掃蕩 OB" : "", text_size=size.tiny, text_color=#3179f5, text_halign=text.align_left, text_valign=text.align_top))
@@ -503,12 +525,20 @@ for s = 0 to 1
                 array.remove(obSw, 0)
                 array.remove(obTch, 0)
                 array.remove(obAt, 0)
+                array.remove(obDisp, 0)
             array.push(obDir, -1)
             array.push(obHi, oHiD)
             array.push(obLo, oLoD)
+            bool dpD = false
+            if bar_index >= mj + 2
+                for q = mj + 2 to bar_index
+                    if array.get(rawH, q) < array.get(rawL, q - 2)
+                        dpD := true
+                        break
             array.push(obSw, swD)
             array.push(obTch, false)
             array.push(obAt, bar_index)
+            array.push(obDisp, dpD)
             if showZones
                 bool hq2 = swD and showSweep
                 array.push(obBox, box.new(mj, oHiD, bar_index, oLoD, border_color=hq2 ? color.new(#f23645, 0) : cNone, border_width=hq2 ? 2 : 1, bgcolor=hq2 ? color.new(#f23645, 65) : cObBear, text=hq2 ? "掃蕩 OB" : "", text_size=size.tiny, text_color=#f23645, text_halign=text.align_left, text_valign=text.align_bottom))
@@ -543,6 +573,7 @@ if nOb > 0
             array.remove(obSw, i)
             array.remove(obTch, i)
             array.remove(obAt, i)
+            array.remove(obDisp, i)
 
 // ---------- 4. FVG（沿用原本的 3 根 K 棒缺口判斷） ----------
 bool fvgBull = bar_index >= 2 and not na(atrv) and low > high[2] and (low - high[2]) > 0.1 * atrv
@@ -749,7 +780,18 @@ if useSpike and barstate.isconfirmed
                 array.set(obTch, i, true)
                 bool trendOk = not spikeTrend or array.get(trArr, 0) == od
                 bool reject = od == 1 ? close > oh : close < ol
-                if array.get(obSw, i) and trendOk and reject
+                // SMC／ICT 過濾
+                float slTry = od == 1 ? ol - spBuf * atrv : oh + spBuf * atrv
+                bool riskOk = spMinRisk <= 0 or math.abs(close - slTry) / close * 100 >= spMinRisk
+                bool biasOk = not spBias or bsP == od
+                float swHi = array.get(pHL, 1)
+                float swLo = array.get(pLL, 1)
+                bool pdOk = not spPD or na(swHi) or na(swLo) or (od == 1 ? close < (swHi + swLo) / 2 : close > (swHi + swLo) / 2)
+                bool dispOk = not spDisp or array.get(obDisp, i)
+                bool sessOk = not spSess or not na(time(timeframe.period, spSessStr, "UTC"))
+                float rngK = high - low
+                bool wickOk = not spWick or (rngK > 0 and (od == 1 ? math.min(open, close) - low : high - math.max(open, close)) >= 0.4 * rngK)
+                if array.get(obSw, i) and trendOk and reject and riskOk and biasOk and pdOk and dispOk and sessOk and wickOk
                     float key = od == 1 ? oh : -ol
                     if pick == -1 or key > pickKey
                         pick := i
@@ -757,7 +799,7 @@ if useSpike and barstate.isconfirmed
     if pick != -1 and strategy.position_size == 0 and not sopEnter
         spikeGo := true
         spDir := array.get(obDir, pick)
-        spSl := spDir == 1 ? array.get(obLo, pick) : array.get(obHi, pick)
+        spSl := spDir == 1 ? array.get(obLo, pick) - spBuf * atrv : array.get(obHi, pick) + spBuf * atrv
 
 if spikeGo
     spikeCount += 1
