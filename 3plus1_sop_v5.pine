@@ -70,6 +70,17 @@ biasFilter = input.bool(false, "只做與指定週期偏見同方向的 3+1 訊�
 bTfF = input.timeframe("60", "過濾用的週期", group=gB)
 
 // ---- 持倉中的新訊號 ----
+// ---- 停損停利標示 ----
+gT = "停損停利標示"
+showLvls  = input.bool(true, "進場時在圖上標示停損／停利的位置與價格", group=gT)
+showEntry = input.bool(true, "同時標示進場價", group=gT)
+nTp       = input.int(3, "停利目標數量（TP1 = 上方的「停利 R」）", minval=1, maxval=3, group=gT)
+tp2R      = input.float(1.5, "TP2 倍數（R）", minval=0.1, step=0.1, group=gT)
+tp3R      = input.float(2.0, "TP3 倍數（R）", minval=0.1, step=0.1, group=gT)
+keepLast  = input.bool(true, "只保留最新一筆的標示", group=gT)
+lvlExt    = input.int(15, "標示線延伸到最新 K 棒右邊幾根", minval=3, maxval=60, group=gT)
+// TP2、TP3 只是參考價位，實際停利仍以 TP1 出場
+
 posMode = input.string("隱藏（維持原部位）", "持倉中又出現新的 3+1 訊號時", options=["隱藏（維持原部位）", "顯示為灰色（不進場）", "反向訊號：平倉並反手"], group="訊號顯示")
 
 // 一組 K 棒的偏見：較舊的一根 = k+1、較新的一根 = k（0 = 第一根開收相同，無法判斷）
@@ -139,6 +150,12 @@ var int   fArm = na
 var box   fEntryBox = na
 var box   fTgtBox = na
 var int   fibCount = 0
+
+// 停損停利標示
+var array<line>  lvlLines = array.new<line>()
+var array<label> lvlLbls  = array.new<label>()
+var bool lvlLive = false
+var int  lvlBar = na
 var array<float> parsedLows = array.new<float>()
 
 var array<int>   obDir = array.new_int()
@@ -612,9 +629,43 @@ if sopEnter
         label.new(bar_index, cDir == 1 ? low : high, "#" + str.tostring(sigCount) + (cDir == 1 ? " 做多" : " 做空") + (doRev ? "（反手）" : "") + "\n" + str.tostring(close, format.mintick),
              style=cDir == 1 ? label.style_label_up : label.style_label_down,
              color=cDir == 1 ? color.new(color.teal, 0) : color.new(color.red, 0), textcolor=color.white, size=size.small)
-        line.new(bar_index, slP, bar_index + 12, slP, color=color.red, style=line.style_dashed)
-        if not na(tpP)
-            line.new(bar_index, tpP, bar_index + 12, tpP, color=color.teal, style=line.style_dashed)
+        if not showLvls
+            line.new(bar_index, slP, bar_index + 12, slP, color=color.red, style=line.style_dashed)
+            if not na(tpP)
+                line.new(bar_index, tpP, bar_index + 12, tpP, color=color.teal, style=line.style_dashed)
+    // 停損／停利標示：從進場那根畫到右邊，右端貼上價格標籤；持倉期間跟著延伸
+    if showLvls
+        if keepLast
+            for ln in lvlLines
+                line.delete(ln)
+            for lb in lvlLbls
+                label.delete(lb)
+            array.clear(lvlLines)
+            array.clear(lvlLbls)
+        float rk = math.abs(close - slP)
+        int xR = bar_index + lvlExt
+        array<float> lvP = array.new_float()
+        array<string> lvT = array.new_string()
+        array<color> lvC = array.new_color()
+        array.push(lvP, slP)
+        array.push(lvT, "SL: ")
+        array.push(lvC, color.new(#ef5350, 0))
+        if showEntry
+            array.push(lvP, close)
+            array.push(lvT, "進場: ")
+            array.push(lvC, color.new(#2962ff, 0))
+        array<float> tpRs = array.from(rr > 0 ? rr : 1.0, tp2R, tp3R)
+        for t = 0 to nTp - 1
+            array.push(lvP, close + cDir * array.get(tpRs, t) * rk)
+            array.push(lvT, "TP" + str.tostring(t + 1) + ": ")
+            array.push(lvC, color.new(#26a69a, 0))
+        for q = 0 to array.size(lvP) - 1
+            float pq = array.get(lvP, q)
+            color cq = array.get(lvC, q)
+            array.push(lvlLines, line.new(bar_index, pq, xR, pq, color=cq, width=q == 0 ? 2 : 1, style=array.get(lvT, q) == "進場: " ? line.style_dotted : line.style_solid))
+            array.push(lvlLbls, label.new(xR, pq, array.get(lvT, q) + str.tostring(pq, format.mintick), style=label.style_label_left, color=color.new(cq, 25), textcolor=color.white, size=size.small))
+        lvlLive := true
+        lvlBar := bar_index
     // 空手直接進場；反手時 strategy.entry 會先平掉反向部位再開新倉
     strategy.entry("SOP", cDir == 1 ? strategy.long : strategy.short)
     strategy.exit("SOP出場", "SOP", stop=slP, limit=tpP)
@@ -689,6 +740,17 @@ if fDir != 0
 // 有部位時，取消尚未成交的 FIB 限價單，避免反向成交
 if strategy.position_size != 0 and not fibFilled
     strategy.cancel("FIB")
+
+// 持倉期間把標示線延伸到最新 K 棒右邊；部位出場後就停在出場那根
+if lvlLive
+    if bar_index > lvlBar and strategy.position_size == 0
+        lvlLive := false
+    else if keepLast
+        int xR2 = bar_index + lvlExt
+        for ln in lvlLines
+            line.set_x2(ln, xR2)
+        for lb in lvlLbls
+            label.set_x(lb, xR2)
 
 // ---------- 7. 更新「CH 之後」的極值（供下一根的 BOS 判斷） ----------
 for s = 0 to 1
