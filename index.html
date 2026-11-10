@@ -182,6 +182,17 @@ tr.click{cursor:pointer}tr.click:hover,tr.sel{background:var(--panel2)}tr.sel td
       <p class="mut" style="margin:8px 0 0;font-size:12px">R = 第 1 批進場價到停損的距離，Rn 目標 = 第 1 批進場價 ± n × R。最後一個目標會平掉剩下的全部。</p>
     </div>
     <div class="card">
+      <h3>停損停利標示</h3>
+      <div class="grid2">
+        <label class="chk" style="align-self:end"><input type="checkbox" id="cShowLvls"> 持倉時在圖上標示停損／停利的位置與價格</label>
+        <label class="f">停利目標數量（TP1 = 停利 R，實際出場）
+          <select id="cNTp"><option value="1">1 個</option><option value="2">2 個</option><option value="3">3 個</option></select>
+        </label>
+        <label class="f">TP2 倍數（R，參考價位）<input type="number" id="cTp2R" min="0.1" step="0.1"></label>
+        <label class="f">TP3 倍數（R，參考價位）<input type="number" id="cTp3R" min="0.1" step="0.1"></label>
+      </div>
+    </div>
+    <div class="card">
       <label class="chk"><input type="checkbox" id="cBlind"> 盲測模式（訓練中隱藏幣種與日期，結束後揭曉）</label>
       <div style="margin-top:12px"><button class="btn primary" id="btnStart">開始訓練</button></div>
       <div id="setupMsg" class="mut" style="margin-top:8px;font-size:12px"></div>
@@ -288,7 +299,7 @@ const DB={
 const SYMS=['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','DOGEUSDT','ADAUSDT','AVAXUSDT','LINKUSDT','LTCUSDT'];
 const DEF={source:'binance',sym:'RANDOM',hist:150,play:500,view:90,unit:1000,maxU:5,fee:0.05,mode:'sop',slMode:'off',slK:1.5,rr:1,confirmFrom:2,needOb2:false,fvgZone:true,engulfExtra:false,ver:2,blind:true,hint:false,
   swingLen:50,mitSrc:'hl',useFib:true,fibStruct:'internal',fibTrend:true,oteHi:0.618,oteLo:0.786,bosBody:0,fibExt:1.272,fibSl:'A',fibExpire:60,
-  biasFilter:false,biasTf:60,posMode:'hide',ladder:false,ladderStr:'1:30,2:30,3:20,4:10,5:10',scaleIn:false,firstPct:50,addAt:'half',addExpire:10,
+  biasFilter:false,biasTf:60,posMode:'hide',ladder:false,ladderStr:'1:30,2:30,3:20,4:10,5:10',scaleIn:false,firstPct:50,addAt:'half',addExpire:10,showLvls:true,nTp:3,tp2R:1.5,tp3R:2,
   htf:'15,60,240',htfN:4,layers:{struct:true,ob:true,fvg:true,liq:false,pd:false,swing:false,htf:true,bias:true}};
 let cfg=(()=>{
   try{
@@ -746,6 +757,12 @@ const tfLabel=m=>m>=1440?'D':m>=60?(m/60)+'h':m+'m';
 /* ============================== 圖表 ============================== */
 const COL={up:'#26a69a',dn:'#ef5350',ob:'#2962ff',obTxt:'#6f93ff',grid:'#1b2430',txt:'#8493a5',bg:'#0d1117'};
 let hover=null,lastGeom=null;
+// 持倉的停利標示：[價格, 名稱, 是否實際出場]
+function posTargets(p){
+  if(p.levels)return p.levels.filter(lv=>!lv.done).map(lv=>[lv.px,`R${lv.r}（${lv.pc}%）`,true]);
+  if(cfg.showLvls&&p.R>0)return[cfg.rr>0?cfg.rr:1,cfg.tp2R,cfg.tp3R].slice(0,cfg.nTp).map((r,i)=>[p.base+p.dir*r*p.R,`TP${i+1}`,i===0]);
+  return p.tp!=null?[[p.tp,'TP',true]]:[];
+}
 /* ---------- 高週期（HTF）K 棒：用 5 分 K 即時合成，只用到目前為止的資料 ---------- */
 // 每組顯示的根數可調（1～12），根數多時自動把每根畫窄一點
 const HTF_GG=12;
@@ -806,6 +823,8 @@ function drawChart(cv,o){
   const i0=Math.max(0,first);
   let hi=-1e18,lo=1e18,vmax=0;
   for(let i=i0;i<=end;i++){hi=Math.max(hi,cs[i].h);lo=Math.min(lo,cs[i].l);vmax=Math.max(vmax,cs[i].v)}
+  // 持倉時讓價格範圍包含停損／停利，標籤才不會被擠到畫面外
+  if(o.pos&&cfg.showLvls)for(const v of posTargets(o.pos).map(x=>x[0]).concat([o.pos.sl,o.pos.avg]))if(v!=null&&isFinite(v)){hi=Math.max(hi,v);lo=Math.min(lo,v)}
   const mg=(hi-lo)*0.07||hi*0.001;hi+=mg;lo-=mg;
   const yp=p=>plotT+(hi-p)/(hi-lo)*(priceB-plotT);
   lastGeom={first,bw,plotR,plotT,priceB,hi,lo,end};
@@ -1028,14 +1047,19 @@ function drawChart(cv,o){
   // 部位線
   if(o.pos){
     const p=o.pos;g.textAlign='left';
-    const line=(price,col,dash,label)=>{
+    // 線從進場那根畫到右邊，右端貼上價格標籤（類似 TradingView 的 SL / TP 標示）
+    const x0=Math.max(0,xi(p.entryIdx)-bw/2);
+    const line=(price,col,dash,label,w)=>{
       if(price==null)return;let y=yp(price);y=Math.max(plotT,Math.min(priceB,y));
-      g.strokeStyle=col;g.setLineDash(dash);g.beginPath();g.moveTo(0,y);g.lineTo(plotR,y);g.stroke();g.setLineDash([]);
-      g.fillStyle=col;g.fillText(label,4,y-7);
+      g.strokeStyle=col;g.lineWidth=w||1;g.setLineDash(dash);g.beginPath();g.moveTo(x0,y);g.lineTo(plotR,y);g.stroke();g.setLineDash([]);g.lineWidth=1;
+      if(!cfg.showLvls){g.fillStyle=col;g.textAlign='left';g.fillText(label,4,y-7);return}
+      const t=`${label}: ${fmtP(price)}`;g.font='bold 11px system-ui,sans-serif';const tw=g.measureText(t).width+12;
+      g.fillStyle=col;g.globalAlpha=.85;g.beginPath();g.moveTo(plotR-tw-8,y);g.lineTo(plotR-tw,y-9);g.lineTo(plotR,y-9);g.lineTo(plotR,y+9);g.lineTo(plotR-tw,y+9);g.closePath();g.fill();g.globalAlpha=1;
+      g.fillStyle='#fff';g.textAlign='left';g.fillText(t,plotR-tw+6,y+.5);g.font='11px system-ui,sans-serif';
     };
-    line(p.avg,'#42a5f5',[],`${p.dir===1?'多':'空'} ${p.units}u 均價`);
-    line(p.sl,'#ef5350',[6,4],'SL');line(p.tp,'#26a69a',[6,4],'TP');
-    if(p.levels)for(const lv of p.levels)if(!lv.done)line(lv.px,'rgba(38,166,154,.75)',[2,4],`R${lv.r}（${lv.pc}%）`);
+    line(p.avg,'#2962ff',[2,3],`${p.dir===1?'多':'空'} ${p.units}u 均價`);
+    line(p.sl,'#ef5350',[],'SL',2);
+    for(const [px,lab,main] of posTargets(p))line(px,main?'#26a69a':'rgba(38,166,154,.7)',main?[]:[6,4],lab);
     if(p.add)line(p.add.px,'#4f8cff',[2,3],'第 2 批掛單');
   }
   // 現價線
@@ -1407,6 +1431,7 @@ function cfgToForm(){
   $('#cOteHi').value=cfg.oteHi;$('#cOteLo').value=cfg.oteLo;$('#cBosBody').value=cfg.bosBody;$('#cFibExt').value=String(cfg.fibExt);$('#cFibSl').value=cfg.fibSl;$('#cFibExpire').value=cfg.fibExpire;
   $('#cBiasFilter').checked=cfg.biasFilter;$('#cBiasTf').value=String(cfg.biasTf);$('#cPosMode').value=cfg.posMode;
   $('#cLadder').checked=cfg.ladder;$('#cLadderStr').value=cfg.ladderStr;$('#cScaleIn').checked=cfg.scaleIn;$('#cFirstPct').value=cfg.firstPct;$('#cAddAt').value=cfg.addAt;$('#cAddExpire').value=cfg.addExpire;
+  $('#cShowLvls').checked=cfg.showLvls;$('#cNTp').value=String(cfg.nTp);$('#cTp2R').value=cfg.tp2R;$('#cTp3R').value=cfg.tp3R;
   $('#cBlind').checked=cfg.blind;$('#cHint').checked=cfg.hint;
   $$('[data-layer]').forEach(e=>e.checked=!!cfg.layers[e.dataset.layer]);
   syncSource();
@@ -1423,7 +1448,8 @@ function formToCfg(){
   cfg.bosBody=n('#cBosBody',0,0,10);cfg.fibExt=+$('#cFibExt').value;cfg.fibSl=$('#cFibSl').value;cfg.fibExpire=Math.round(n('#cFibExpire',60,5,300));
   cfg.biasFilter=$('#cBiasFilter').checked;cfg.biasTf=+$('#cBiasTf').value;cfg.posMode=$('#cPosMode').value;
   cfg.ladder=$('#cLadder').checked;cfg.ladderStr=parseLadder($('#cLadderStr').value).map(x=>x.join(':')).join(',')||DEF.ladderStr;
-  cfg.scaleIn=$('#cScaleIn').checked;cfg.firstPct=n('#cFirstPct',50,10,100);cfg.addAt=$('#cAddAt').value;cfg.addExpire=Math.round(n('#cAddExpire',10,1,100));saveCfg();
+  cfg.scaleIn=$('#cScaleIn').checked;cfg.firstPct=n('#cFirstPct',50,10,100);cfg.addAt=$('#cAddAt').value;cfg.addExpire=Math.round(n('#cAddExpire',10,1,100));
+  cfg.showLvls=$('#cShowLvls').checked;cfg.nTp=+$('#cNTp').value;cfg.tp2R=n('#cTp2R',1.5,0.1,20);cfg.tp3R=n('#cTp3R',2,0.1,20);saveCfg();
 }
 function syncSource(){
   const s=$('#cSource').value;$('#wrapSym').hidden=s!=='binance';$('#wrapCsv').hidden=s!=='csv';
