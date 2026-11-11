@@ -1,67 +1,75 @@
 //@version=5
-// HTF 蠟燭：把比目前圖表大的 3 個週期，最近幾根 K 棒縮小，畫在目前圖表的右側空白處
-// 預設「依圖表週期自動選擇」：5 分圖 → 15m / 1H / 4H；15 分圖 → 1H / 4H / 1D；60 分圖 → 4H / 1D / 1W
+// HTF 蠟燭：把較高週期最近幾根 K 棒縮小，畫在目前圖表的右側空白處（最多 4 組週期、每組最多 12 根）
 // 每組上方顯示週期名稱、目前這根的方向（▲ 收漲 / ▼ 收跌）與距離收盤的倒數計時
 // 空心（半透明）的那根是「還沒收盤」的目前 K 棒
-// 大週期 K 棒直接用目前圖表的 K 棒合成（不用 request.security），所以每組可以顯示到 12 根；
-// 圖表載入的歷史要夠長（例如 5 分圖顯示 12 根日線，需要約 12 天的 5 分 K）
-indicator("HTF 蠟燭", overlay=true, max_boxes_count=100, max_lines_count=100, max_labels_count=60, max_bars_back=500)
+// 週期：預設照下方填的 4 個週期顯示；比圖表小或相同的週期會自動略過（例如 60 分圖上的 15m）
+//       打開「依圖表週期自動選擇」時，改成自動挑比圖表大的 4 個週期，這時下方填的週期不會使用
+// 大週期 K 棒直接用目前圖表的 K 棒合成（不用 request.security）；圖表載入的歷史要夠長
+// 位置以「K 棒寬度」為單位，可以用 0.5 調整（內部用時間座標畫，所以支援半根的間距）
+indicator("HTF 蠟燭", overlay=true, max_boxes_count=200, max_lines_count=200, max_labels_count=60, max_bars_back=500)
 
-autoTf = input.bool(true, "依圖表週期自動選擇（只顯示比圖表大的週期）")
-tfIn1 = input.timeframe("15", "週期 1（關閉自動時使用）")
-tfIn2 = input.timeframe("60", "週期 2（關閉自動時使用）")
-tfIn3 = input.timeframe("240", "週期 3（關閉自動時使用）")
-use1 = input.bool(true, "顯示週期 1")
-use2In = input.bool(true, "顯示週期 2")
-use3In = input.bool(true, "顯示週期 3")
+autoTf = input.bool(false, "依圖表週期自動選擇（打開後會忽略下方填的週期）")
+tfIn1 = input.timeframe("15", "週期 1", inline="t1")
+use1  = input.bool(true, "顯示", inline="t1")
+tfIn2 = input.timeframe("60", "週期 2", inline="t2")
+use2  = input.bool(true, "顯示", inline="t2")
+tfIn3 = input.timeframe("240", "週期 3", inline="t3")
+use3  = input.bool(true, "顯示", inline="t3")
+tfIn4 = input.timeframe("D", "週期 4", inline="t4")
+use4  = input.bool(true, "顯示", inline="t4")
+nShow = input.int(4, "每組顯示幾根（含目前這根，最多 12）", minval=1, maxval=12)
+cw    = input.float(3.0, "每根寬度（K 棒數）", minval=0.5, maxval=6, step=0.5)
+gap   = input.float(1.0, "每根之間的間距（K 棒數，可用 0.5）", minval=0, maxval=4, step=0.5)
+gg    = input.float(4.0, "每組之間的間距（K 棒數）", minval=0.5, maxval=15, step=0.5)
+offs  = input.float(6.0, "和最新 K 棒的距離（K 棒數）", minval=0.5, maxval=40, step=0.5)
+upCol = input.color(#089981, "上漲顏色")
+dnCol = input.color(#F23645, "下跌顏色")
 
-// 依圖表週期挑出比它大的三個週期（15m、1H、4H、1D、1W 依序往上取）
+// 自動模式：從 15m、1H、4H、1D、1W 依序挑出比圖表大的前 4 個
 int chSec = timeframe.in_seconds()
 string autoT1 = chSec < 900 ? "15" : chSec < 3600 ? "60" : chSec < 14400 ? "240" : chSec < 86400 ? "D" : "W"
 string autoT2 = chSec < 900 ? "60" : chSec < 3600 ? "240" : chSec < 14400 ? "D" : "W"
 string autoT3 = chSec < 900 ? "240" : chSec < 3600 ? "D" : "W"
+string autoT4 = chSec < 900 ? "D" : "W"
 tf1 = autoTf ? autoT1 : tfIn1
 tf2 = autoTf ? autoT2 : tfIn2
 tf3 = autoTf ? autoT3 : tfIn3
-// 自動模式下，週期重複（例如 4H 圖以上只剩 1W）就不重複顯示
-use2 = use2In and not (autoTf and tf2 == tf1)
-use3 = use3In and not (autoTf and (tf3 == tf2 or tf3 == tf1))
-nShow = input.int(4, "每組顯示幾根（含目前這根，最多 12）", minval=1, maxval=12)
-cw    = input.int(3, "每根寬度（以圖表 K 棒數計）", minval=1, maxval=6)
-gap   = input.int(1, "每根之間的間距", minval=0, maxval=4)
-gg    = input.int(4, "每組之間的間距", minval=1, maxval=15)
-offs  = input.int(6, "和最新 K 棒的距離", minval=1, maxval=40)
-upCol = input.color(#089981, "上漲顏色")
-dnCol = input.color(#F23645, "下跌顏色")
+tf4 = autoTf ? autoT4 : tfIn4
+// 只顯示比圖表大的週期；自動模式下重複的週期不重複顯示
+bool ok1 = use1 and timeframe.in_seconds(tf1) > chSec
+bool ok2 = use2 and timeframe.in_seconds(tf2) > chSec and not (autoTf and tf2 == tf1)
+bool ok3 = use3 and timeframe.in_seconds(tf3) > chSec and not (autoTf and (tf3 == tf2 or tf3 == tf1))
+bool ok4 = use4 and timeframe.in_seconds(tf4) > chSec and not (autoTf and (tf4 == tf3 or tf4 == tf2 or tf4 == tf1))
 
 f_name(string tf) =>
     int sec = timeframe.in_seconds(tf)
-    sec < 3600 ? str.tostring(sec / 60, "#") + "m" : sec < 86400 ? str.tostring(sec / 3600, "#") + "H" : str.tostring(sec / 86400, "#") + "D"
+    sec < 3600 ? str.tostring(sec / 60, "#") + "m" : sec < 86400 ? str.tostring(sec / 3600, "#") + "H" : sec < 604800 ? str.tostring(sec / 86400, "#") + "D" : str.tostring(sec / 604800, "#") + "W"
 
 f_cd(int ms) =>
     int t = math.max(0, int(ms / 1000))
-    int hh = int(t / 3600)
+    int dd = int(t / 86400)
+    int h2 = int((t % 86400) / 3600)
     int mm = int((t % 3600) / 60)
     int ss = t % 60
     string m2 = (mm < 10 ? "0" : "") + str.tostring(mm)
     string s2 = (ss < 10 ? "0" : "") + str.tostring(ss)
-    hh > 0 ? str.tostring(hh) + ":" + m2 + ":" + s2 : m2 + ":" + s2
+    string body = h2 > 0 or dd > 0 ? str.tostring(h2) + ":" + m2 + ":" + s2 : m2 + ":" + s2
+    dd > 0 ? str.tostring(dd) + "d " + body : body
 
 // ---------- 用圖表 K 棒合成大週期 K 棒，每個週期保留最近 12 根 ----------
-// 三個週期的資料依序放在同一組陣列：索引 = 週期序號 * 12 + 第幾根（0 = 最舊）
+// 4 個週期的資料依序放在同一組陣列：索引 = 週期序號 * 12 + 第幾根（0 = 最舊）
 var int MAXN = 12
-var array<float> candO = array.new_float(36, na)
-var array<float> candH = array.new_float(36, na)
-var array<float> candL = array.new_float(36, na)
-var array<float> candC = array.new_float(36, na)
-var array<int>   candN = array.new_int(3, 0)        // 每個週期目前存了幾根
+var array<float> candO = array.new_float(48, na)
+var array<float> candH = array.new_float(48, na)
+var array<float> candL = array.new_float(48, na)
+var array<float> candC = array.new_float(48, na)
+var array<int>   candN = array.new_int(4, 0)
 
-array<bool> newBar = array.from(timeframe.change(tf1), timeframe.change(tf2), timeframe.change(tf3))
-for g = 0 to 2
+array<bool> newBar = array.from(timeframe.change(tf1), timeframe.change(tf2), timeframe.change(tf3), timeframe.change(tf4))
+for g = 0 to 3
     int n = array.get(candN, g)
     int base = g * MAXN
     if array.get(newBar, g) or n == 0
-        // 新的一根大週期 K 棒：滿了就把最舊的往前擠掉
         if n == MAXN
             for i = 0 to MAXN - 2
                 array.set(candO, base + i, array.get(candO, base + i + 1))
@@ -83,13 +91,18 @@ for g = 0 to 2
 int cl1 = time_close(tf1)
 int cl2 = time_close(tf2)
 int cl3 = time_close(tf3)
+int cl4 = time_close(tf4)
 
 var array<box>   bxs = array.new<box>()
 var array<line>  lns = array.new<line>()
 var array<label> lbs = array.new<label>()
 
+// 以「K 棒數」換算成時間座標（可以是 0.5 根）
+int barMs = chSec * 1000
+f_x(float units) =>
+    time + int(math.round(units * barMs))
+
 if barstate.islast
-    // 清掉上一次畫的
     for b in bxs
         box.delete(b)
     for l in lns
@@ -100,17 +113,18 @@ if barstate.islast
     array.clear(lns)
     array.clear(lbs)
 
-    array<string> names = array.from(f_name(tf1), f_name(tf2), f_name(tf3))
-    array<int> closes = array.from(cl1, cl2, cl3)
-    array<bool> uses = array.from(use1, use2, use3)
+    array<string> names = array.from(f_name(tf1), f_name(tf2), f_name(tf3), f_name(tf4))
+    array<int> closes = array.from(cl1, cl2, cl3, cl4)
+    array<bool> oks = array.from(ok1, ok2, ok3, ok4)
+    float groupW = nShow * cw + (nShow - 1) * gap
 
     int slot = 0
-    for g = 0 to 2
+    for g = 0 to 3
         int n = array.get(candN, g)
-        if array.get(uses, g) and n > 0
+        if array.get(oks, g) and n > 0
             int base = g * MAXN
             int show = math.min(nShow, n)
-            int x0 = bar_index + offs + slot * (nShow * (cw + gap) + gg)
+            float u0 = offs + slot * (groupW + gg)
             slot += 1
             float topP = -1e18
             for i = 0 to show - 1
@@ -120,17 +134,20 @@ if barstate.islast
                 float l = array.get(candL, j)
                 float c = array.get(candC, j)
                 topP := math.max(topP, h)
-                int xl = x0 + (nShow - show + i) * (cw + gap)
+                float ul = u0 + (nShow - show + i) * (cw + gap)
+                int xl = f_x(ul)
+                int xr = f_x(ul + cw)
+                int xm = f_x(ul + cw / 2)
                 color col = c >= o ? upCol : dnCol
                 bool forming = i == show - 1
-                array.push(lns, line.new(xl + int(cw / 2), h, xl + int(cw / 2), l, color=col))
-                array.push(bxs, box.new(xl, math.max(o, c), xl + cw, math.min(o, c), border_color=col, bgcolor=forming ? color.new(col, 70) : col))
+                array.push(lns, line.new(xm, h, xm, l, xloc=xloc.bar_time, color=col))
+                array.push(bxs, box.new(xl, math.max(o, c), xr, math.min(o, c), xloc=xloc.bar_time, border_color=col, bgcolor=forming ? color.new(col, 70) : col))
             float oNow = array.get(candO, base + n - 1)
             float cNow = array.get(candC, base + n - 1)
             bool upNow = cNow >= oNow
             int remain = array.get(closes, g) - timenow
             string cd = remain > 0 ? f_cd(remain) : "--"
-            array.push(lbs, label.new(x0 + int((nShow * (cw + gap)) / 2), topP, array.get(names, g) + (upNow ? " ▲" : " ▼") + "\n(" + cd + ")",
+            array.push(lbs, label.new(f_x(u0 + groupW / 2), topP, array.get(names, g) + (upNow ? " ▲" : " ▼") + "\n(" + cd + ")", xloc=xloc.bar_time,
                  color=color.new(color.white, 100), textcolor=upNow ? upCol : dnCol, style=label.style_label_down, size=size.small))
 
 plot(close, "close", display=display.none)
