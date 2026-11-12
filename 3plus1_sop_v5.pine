@@ -1,11 +1,11 @@
 //@version=5
-// 3+1 SOP 解答版 v5：v4 + 盤中預覽訊號（可開關）+ 斐波那契 OTE 進場模型（可開關）
+// 3+1 SOP 解答版 v5：v4 + 盤中預覽訊號 + 偏見燈號 + 突刺進場（斐波那契 OTE 已移到「HTF 蠟燭」指標，只顯示不下單）
 // 結構與訂單塊（OB）的判斷沿用 v4，和 LuxAlgo「Smart Money Concepts」相同的設計
 // 右上角「偏見燈號」：用各週期最近兩根已收盤的 K 棒判斷這一根的方向（綠燈偏多、紅燈偏空）
 //   第一根綠 K：第二根收盤高於第一根最高點 → 偏多（目標：第二根的高點），否則偏空（目標：第二根的低點）
 //   第一根紅 K：第二根收盤低於第一根最低點 → 偏空（目標：第二根的低點），否則偏多（目標：第二根的高點）
 // 適用週期：任何週期都可以（5 分、15 分、60 分…），所有判斷都以「目前圖表的 K 棒」計算。
-//   注意：以 K 棒數計算的設定（Swing 結構長度、回踩確認視窗、FIB 等待根數）在不同週期代表的時間不同，
+//   注意：以 K 棒數計算的設定（Swing 結構長度、回踩確認視窗、突刺 Kill Zone 除外的其他設定）在不同週期代表的時間不同，
 //   例如「等 60 根」在 5 分圖是 5 小時、在 60 分圖是 2.5 天，可依週期自行調整。
 //   - 結構：內部結構（5 根）與 Swing 結構（預設 50 根）兩套擺動點，以收盤突破；內部突破若與 Swing 擺動點相同則歸 Swing
 //   - OB：突破時，取「被突破的擺動點」到「突破前一根」之間最低（多）／最高（空）的 K 棒，
@@ -44,18 +44,6 @@ mitSrc   = input.string("High/Low", "OB 失效判斷（LuxAlgo 預設 High/Low�
 liveMarks = input.bool(false, "盤中預覽訊號：未收線先標示，收線不合格自動取消（只在即時行情出現）", group="訊號顯示")
 useSop    = input.bool(true, "啟用 3+1 SOP 進場", group="訊號顯示")
 
-// ---- 斐波那契 OTE 進場模型 ----
-useFib    = input.bool(false, "啟用斐波那契 OTE 進場", group="斐波那契 OTE")
-fibStruct = input.string("內部結構（5 根）", "畫斐波那契用的波段", options=["內部結構（5 根）", "Swing 結構"], group="斐波那契 OTE")
-fibTrend  = input.bool(true, "要求大方向（Swing 結構）與交易方向一致", group="斐波那契 OTE")
-oteHi     = input.float(0.618, "OTE 區起點（回撤比例）", minval=0.3, maxval=0.95, step=0.001, group="斐波那契 OTE")
-oteLo     = input.float(0.786, "OTE 區終點（回撤比例）", minval=0.4, maxval=1.0, step=0.001, group="斐波那契 OTE")
-bosBody   = input.float(0.0, "BOS K 棒實體至少幾倍 ATR（0 = 不限，用來要求「強勢長 K」）", minval=0.0, step=0.25, group="斐波那契 OTE")
-fibExt    = input.float(1.272, "停利：趨勢延伸（A→B 的倍數，從進場點 C 起算）", options=[1.272, 1.414], group="斐波那契 OTE")
-fibSl     = input.string("A 點（綠框低點／高點）之外", "停損位置", options=["A 點（綠框低點／高點）之外", "進場框之外"], group="斐波那契 OTE")
-fibExpire = input.int(60, "BOS 後最多等幾根 K 棒回到進場框", minval=5, maxval=300, group="斐波那契 OTE")
-showFib   = input.bool(true, "顯示斐波那契框（綠框 OTE／進場框／目標區）", group="斐波那契 OTE")
-int fibS  = fibStruct == "Swing 結構" ? 1 : 0
 
 // ---- 偏見燈號 ----
 gB = "偏見燈號"
@@ -80,6 +68,11 @@ tp3R      = input.float(2.0, "TP3 倍數（R）", minval=0.1, step=0.1, group=gT
 keepLast  = input.bool(true, "只保留最新一筆的標示", group=gT)
 lvlExt    = input.int(15, "標示線延伸到最新 K 棒右邊幾根", minval=3, maxval=60, group=gT)
 clearOnExit = input.bool(true, "部位出場後清除標示（圖表比較乾淨）", group=gT)
+
+// ---- 出場管理 ----
+gX = "出場管理"
+beAfterTp1 = input.bool(true, "突刺到 TP1 後，剩下部位的停損移到進場價（保本）", group=gX)
+timeStop   = input.int(100, "時間停損：持倉超過幾根 K 棒就以收盤價平倉（0 = 關閉；5 分圖 100 根約 8 小時）", minval=0, maxval=5000, group=gX)
 
 // ---- 掃蕩型 OB／突刺進場 ----
 gS = "掃蕩型 OB／突刺進場"
@@ -166,15 +159,6 @@ var array<float> legLB = array.new<float>(2, na)   // 形成擺動高點時，�
 var array<float> legHB = array.new<float>(2, na)   // 形成擺動低點時，前一個擺動高點
 var array<int>   fvgAt = array.new_int()
 
-// 斐波那契 OTE 設定狀態
-var int   fDir = 0
-var float fA = na
-var int   fAIdx = na
-var float fB = na
-var int   fArm = na
-var box   fEntryBox = na
-var box   fTgtBox = na
-var int   fibCount = 0
 
 // 停損停利標示
 var array<line>  lvlLines = array.new<line>()
@@ -349,31 +333,6 @@ for s = 0 to 1
             validU := close > array.get(sinceHArr, s)
         array.set(pHCr, s, true)
         array.set(trArr, s, 1)
-        // ---- 斐波那契 OTE（做多）：前一段 L1→H1，回檔低點 L2 落在 OTE 區，收盤突破 H1（BOS）----
-        if useFib and s == fibS
-            bool bigUp = not fibTrend or (s == 1 ? trBeforeU == 1 : array.get(trArr, 1) == 1)
-            float L1 = array.get(legLB, s)
-            int hb = array.get(pHBar, s)
-            float L2 = array.get(rawL, hb)
-            int L2i = hb
-            for i = hb + 1 to bar_index
-                if array.get(rawL, i) < L2
-                    L2 := array.get(rawL, i)
-                    L2i := i
-            float rngU = lvH - L1
-            bool strongU = bosBody <= 0 or (close > open and close - open >= bosBody * atrv)
-            if bigUp and strongU and not na(L1) and rngU > 0
-                float r = (lvH - L2) / rngU
-                if r >= oteHi and r <= oteLo
-                    fDir := 1
-                    fA := L2
-                    fAIdx := L2i
-                    fB := high
-                    fArm := bar_index
-                    fEntryBox := na
-                    fTgtBox := na
-                    if showFib
-                        box.new(hb, lvH - oteHi * rngU, bar_index, lvH - oteLo * rngU, border_color=color.new(#089981, 40), bgcolor=color.new(#089981, 82), text="OTE " + str.tostring(oteHi) + "–" + str.tostring(oteLo), text_size=size.tiny, text_color=#089981, text_halign=text.align_left, text_valign=text.align_bottom)
         if validU
             array.push(sigDir, 1)
             array.push(sigTyp, isCHu ? 1 : 2)
@@ -456,31 +415,6 @@ for s = 0 to 1
             validD := close < array.get(sinceLArr, s)
         array.set(pLCr, s, true)
         array.set(trArr, s, -1)
-        // ---- 斐波那契 OTE（做空）：前一段 H1→L1，反彈高點 H2 落在 OTE 區，收盤跌破 L1（BOS）----
-        if useFib and s == fibS
-            bool bigDn = not fibTrend or (s == 1 ? trBeforeD == -1 : array.get(trArr, 1) == -1)
-            float H1s = array.get(legHB, s)
-            int lb = array.get(pLBar, s)
-            float H2 = array.get(rawH, lb)
-            int H2i = lb
-            for i = lb + 1 to bar_index
-                if array.get(rawH, i) > H2
-                    H2 := array.get(rawH, i)
-                    H2i := i
-            float rngD = H1s - lvL
-            bool strongD = bosBody <= 0 or (close < open and open - close >= bosBody * atrv)
-            if bigDn and strongD and not na(H1s) and rngD > 0
-                float r2 = (H2 - lvL) / rngD
-                if r2 >= oteHi and r2 <= oteLo
-                    fDir := -1
-                    fA := H2
-                    fAIdx := H2i
-                    fB := low
-                    fArm := bar_index
-                    fEntryBox := na
-                    fTgtBox := na
-                    if showFib
-                        box.new(lb, lvL + oteLo * rngD, bar_index, lvL + oteHi * rngD, border_color=color.new(#F23645, 40), bgcolor=color.new(#F23645, 82), text="OTE " + str.tostring(oteHi) + "–" + str.tostring(oteLo), text_size=size.tiny, text_color=#F23645, text_halign=text.align_left, text_valign=text.align_top)
         if validD
             array.push(sigDir, -1)
             array.push(sigTyp, isCHd ? 1 : 2)
@@ -764,6 +698,14 @@ else if sopConfirmed and grayOnly and showLbl
 
 // ---------- 突刺進場：上漲中第一次回踩掃蕩型多方 OB，刺進 OB 後收盤收回 OB 上緣之上（空方相反） ----------
 var int spikeCount = 0
+// 突刺部位的狀態（TP1 後移到保本用）
+var int   spDirV = 0
+var float spEntry = na
+var float spT1 = na
+var float spT2 = na
+var float spT3 = na
+var int   spBarV = na
+var bool  spBE = false
 bool spikeGo = false
 int  spDir = 0
 float spSl = na
@@ -824,6 +766,13 @@ if spikeGo
     strategy.exit("突刺TP1", "SPIKE", qty_percent=34, stop=spSl, limit=t1)
     strategy.exit("突刺TP2", "SPIKE", qty_percent=33, stop=spSl, limit=t2)
     strategy.exit("突刺TP3", "SPIKE", stop=spSl, limit=t3)
+    spDirV := spDir
+    spEntry := close
+    spT1 := t1
+    spT2 := t2
+    spT3 := t3
+    spBarV := bar_index
+    spBE := false
     if showLbl
         label.new(bar_index, spDir == 1 ? low : high, "突刺 #" + str.tostring(spikeCount) + (spDir == 1 ? " 做多" : " 做空") + "\n" + str.tostring(close, format.mintick),
              style=spDir == 1 ? label.style_label_up : label.style_label_down,
@@ -871,72 +820,26 @@ if lvNew and showLvls
     lvlLive := true
     lvlBar := bar_index
 
-// ---------- 斐波那契 OTE：BOS 後在新一段畫斐波那契，找與 FVG 重疊的進場框，限價等回踩 ----------
-bool fibFilled = false
-if fDir != 0
-    // B 點：突破後的新高（做空：新低）
-    fB := fDir == 1 ? math.max(fB, high) : math.min(fB, low)
-    float leg2 = math.abs(fB - fA)
-    // 新一段的 OTE 區
-    float oBot = fDir == 1 ? fB - oteLo * leg2 : fB + oteHi * leg2
-    float oTop = fDir == 1 ? fB - oteHi * leg2 : fB + oteLo * leg2
-    // 找新一段走勢（A 點之後）留下、仍有效、與 OTE 區重疊最多的同向 FVG
-    float eTop = na
-    float eBot = na
-    float bestOv = 0.0
-    int nF = array.size(fvgDir)
-    if nF > 0
-        for i = 0 to nF - 1
-            if array.get(fvgDir, i) == fDir and array.get(fvgAt, i) > fAIdx
-                float ovTop = math.min(array.get(fvgHi, i), oTop)
-                float ovBot = math.max(array.get(fvgLo, i), oBot)
-                if ovTop - ovBot > bestOv
-                    bestOv := ovTop - ovBot
-                    eTop := ovTop
-                    eBot := ovBot
-    bool dead = (fDir == 1 and close < fA) or (fDir == -1 and close > fA) or bar_index - fArm > fibExpire
-    bool inPos = strategy.position_size != 0
-    // 偵測限價單是否成交
-    if inPos and strategy.position_size[1] == 0 and strategy.opentrades > 0 and strategy.opentrades.entry_id(strategy.opentrades - 1) == "FIB"
-        fibFilled := true
-    if fibFilled
-        fibCount += 1
-        if showLbl
-            label.new(bar_index, fDir == 1 ? low : high, "FIB #" + str.tostring(fibCount) + (fDir == 1 ? " 做多" : " 做空"),
-                 style=fDir == 1 ? label.style_label_up : label.style_label_down,
-                 color=fDir == 1 ? color.new(#2157f3, 0) : color.new(#b22833, 0), textcolor=color.white, size=size.small)
-        alert("斐波那契 OTE 進場成交：" + (fDir == 1 ? "做多 " : "做空 ") + syminfo.ticker, alert.freq_once_per_bar)
-        fDir := 0
-    else if dead
-        strategy.cancel("FIB")
-        fDir := 0
-    else if barstate.isconfirmed
-        if not na(eTop) and not inPos and not sopEnter and not spikeGo and useFib
-            float ePx = fDir == 1 ? eTop : eBot
-            float fSl = fibSl == "進場框之外" ? (fDir == 1 ? eBot : eTop) : fA
-            float fTp = ePx + fDir * fibExt * leg2
-            if (ePx - fSl) * fDir > 0
-                strategy.entry("FIB", fDir == 1 ? strategy.long : strategy.short, limit=ePx)
-                strategy.exit("FIB出場", "FIB", stop=fSl, limit=fTp)
-            float tTop = fDir == 1 ? ePx + 1.414 * leg2 : ePx - 1.272 * leg2
-            float tBot = fDir == 1 ? ePx + 1.272 * leg2 : ePx - 1.414 * leg2
-            if showFib
-                if na(fEntryBox)
-                    fEntryBox := box.new(bar_index, eTop, bar_index + 10, eBot, border_color=fDir == 1 ? #2157f3 : #b22833, bgcolor=color.new(fDir == 1 ? #2157f3 : #b22833, 80), text=fDir == 1 ? "Entry Long" : "Entry Short", text_size=size.tiny, text_color=fDir == 1 ? #2157f3 : #b22833)
-                    fTgtBox := box.new(bar_index, tTop, bar_index + 10, tBot, border_color=color.new(color.orange, 40), bgcolor=color.new(color.orange, 85), text="Target 1.272–1.414", text_size=size.tiny, text_color=color.orange)
-                else
-                    box.set_top(fEntryBox, eTop)
-                    box.set_bottom(fEntryBox, eBot)
-                    box.set_right(fEntryBox, bar_index + 10)
-                    box.set_top(fTgtBox, tTop)
-                    box.set_bottom(fTgtBox, tBot)
-                    box.set_right(fTgtBox, bar_index + 10)
-        else
-            strategy.cancel("FIB")
-
-// 有部位時，取消尚未成交的 FIB 限價單，避免反向成交
-if strategy.position_size != 0 and not fibFilled
-    strategy.cancel("FIB")
+// ---------- 出場管理 ----------
+// A. 突刺到 TP1 後，TP2／TP3 兩份的停損移到進場價（保本）
+if spDirV != 0 and bar_index > spBarV
+    if strategy.position_size == 0
+        spDirV := 0
+    else if beAfterTp1 and not spBE and (spDirV == 1 ? high >= spT1 : low <= spT1)
+        spBE := true
+        strategy.exit("突刺TP2", "SPIKE", qty_percent=33, stop=spEntry, limit=spT2)
+        strategy.exit("突刺TP3", "SPIKE", stop=spEntry, limit=spT3)
+        if array.size(lvlLines) > 0 and array.size(lvlLbls) > 0
+            line.set_y1(array.get(lvlLines, 0), spEntry)
+            line.set_y2(array.get(lvlLines, 0), spEntry)
+            label.set_y(array.get(lvlLbls, 0), spEntry)
+            label.set_text(array.get(lvlLbls, 0), "SL（保本）: " + str.tostring(spEntry, format.mintick))
+        alert("突刺到 TP1，停損移到保本 " + str.tostring(spEntry, format.mintick), alert.freq_once_per_bar)
+// B. 時間停損：持倉太久就平倉，避免一直卡住新的訊號
+if timeStop > 0 and strategy.position_size != 0 and strategy.opentrades > 0 and barstate.isconfirmed
+    if bar_index - strategy.opentrades.entry_bar_index(0) >= timeStop
+        strategy.close_all(comment="時間停損")
+        alert("時間停損：持倉超過 " + str.tostring(timeStop) + " 根 K 棒，已平倉", alert.freq_once_per_bar_close)
 
 // 持倉期間把標示線延伸到最新 K 棒右邊；部位出場後就停在出場那根
 if lvlLive
