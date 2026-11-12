@@ -72,7 +72,8 @@ clearOnExit = input.bool(true, "部位出場後清除標示（圖表比較乾淨
 // ---- 出場管理 ----
 gX = "出場管理"
 beAfterTp1 = input.bool(true, "突刺到 TP1 後，剩下部位的停損移到進場價（保本）", group=gX)
-timeStop   = input.int(100, "時間停損：持倉超過幾根 K 棒就以收盤價平倉（0 = 關閉；5 分圖 100 根約 8 小時）", minval=0, maxval=5000, group=gX)
+useTimeStop = input.bool(false, "啟用時間停損（持倉太久就以收盤價平倉）", group=gX)
+timeStop   = input.int(100, "時間停損：持倉超過幾根 K 棒就平倉（5 分圖 100 根約 8 小時）", minval=1, maxval=5000, group=gX)
 
 // ---- 掃蕩型 OB／突刺進場 ----
 gS = "掃蕩型 OB／突刺進場"
@@ -836,7 +837,7 @@ if spDirV != 0 and bar_index > spBarV
             label.set_text(array.get(lvlLbls, 0), "SL（保本）: " + str.tostring(spEntry, format.mintick))
         alert("突刺到 TP1，停損移到保本 " + str.tostring(spEntry, format.mintick), alert.freq_once_per_bar)
 // B. 時間停損：持倉太久就平倉，避免一直卡住新的訊號
-if timeStop > 0 and strategy.position_size != 0 and strategy.opentrades > 0 and barstate.isconfirmed
+if useTimeStop and strategy.position_size != 0 and strategy.opentrades > 0 and barstate.isconfirmed
     if bar_index - strategy.opentrades.entry_bar_index(0) >= timeStop
         strategy.close_all(comment="時間停損")
         alert("時間停損：持倉超過 " + str.tostring(timeStop) + " 根 K 棒，已平倉", alert.freq_once_per_bar_close)
