@@ -86,6 +86,8 @@ gS = "掃蕩型 OB／突刺進場"
 showSweep  = input.bool(true, "標示掃蕩型 OB（形成時刺穿前低／前高又收回，視為高品質 OB）", group=gS)
 useSpike   = input.bool(true, "啟用突刺進場：第一次回踩掃蕩型 OB，刺進去後收回 OB 外緣就進場", group=gS)
 spikeTrend = input.bool(true, "突刺進場要求內部結構同方向（做多要多頭、做空要空頭）", group=gS)
+spShowBlk  = input.bool(true, "持倉中出現的突刺訊號也標示（灰色，不進場）", group=gS)
+spDebug    = input.bool(false, "顯示被過濾掉的突刺（灰色 ×，並列出沒通過的條件）", group=gS)
 spR1 = input.float(1.0, "突刺 TP1（R）", minval=0.1, step=0.1, inline="sp", group=gS)
 spR2 = input.float(1.5, "TP2", minval=0.1, step=0.1, inline="sp", group=gS)
 spR3 = input.float(2.0, "TP3", minval=0.1, step=0.1, inline="sp", group=gS)
@@ -791,15 +793,26 @@ if useSpike and barstate.isconfirmed
                 bool sessOk = not spSess or not na(time(timeframe.period, spSessStr, "UTC"))
                 float rngK = high - low
                 bool wickOk = not spWick or (rngK > 0 and (od == 1 ? math.min(open, close) - low : high - math.max(open, close)) >= 0.4 * rngK)
-                if array.get(obSw, i) and trendOk and reject and riskOk and biasOk and pdOk and dispOk and sessOk and wickOk
+                bool allOk = trendOk and riskOk and biasOk and pdOk and dispOk and sessOk and wickOk
+                if array.get(obSw, i) and reject and allOk
                     float key = od == 1 ? oh : -ol
                     if pick == -1 or key > pickKey
                         pick := i
                         pickKey := key
+                // 除錯：掃蕩型 OB 第一次回踩也收回了，但被過濾條件擋掉 → 標出沒通過的條件
+                else if spDebug and array.get(obSw, i) and reject
+                    string why = (trendOk ? "" : " 結構") + (riskOk ? "" : " 停損太窄") + (biasOk ? "" : " 偏見") + (pdOk ? "" : " 折溢價") + (dispOk ? "" : " 位移") + (sessOk ? "" : " 時段") + (wickOk ? "" : " 影線")
+                    label.new(bar_index, od == 1 ? low : high, "× 突刺" + (od == 1 ? "多" : "空") + "\n未通過:" + why,
+                         style=od == 1 ? label.style_label_up : label.style_label_down, color=color.new(color.gray, 60), textcolor=color.white, size=size.tiny)
     if pick != -1 and strategy.position_size == 0 and not sopEnter
         spikeGo := true
         spDir := array.get(obDir, pick)
         spSl := spDir == 1 ? array.get(obLo, pick) - spBuf * atrv : array.get(obHi, pick) + spBuf * atrv
+    // 訊號成立但已經有部位（或同一根 3+1 已進場）→ 只標示，不進場
+    else if pick != -1 and spShowBlk and showLbl
+        int bd = array.get(obDir, pick)
+        label.new(bar_index, bd == 1 ? low : high, "突刺" + (bd == 1 ? " 做多" : " 做空") + "\n（持倉中未進場）",
+             style=bd == 1 ? label.style_label_up : label.style_label_down, color=color.new(#7e57c2, 60), textcolor=color.white, size=size.tiny)
 
 if spikeGo
     spikeCount += 1
