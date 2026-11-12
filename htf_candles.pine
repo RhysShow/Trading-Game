@@ -6,7 +6,10 @@
 //       打開「依圖表週期自動選擇」時，改成自動挑比圖表大的 4 個週期，這時下方填的週期不會使用
 // 大週期 K 棒直接用目前圖表的 K 棒合成（不用 request.security）；圖表載入的歷史要夠長
 // 位置以「K 棒寬度」為單位，可以用 0.5 調整（內部用時間座標畫，所以支援半根的間距）
-indicator("HTF 蠟燭", overlay=true, max_boxes_count=200, max_lines_count=200, max_labels_count=60, max_bars_back=500)
+// 另外可顯示「較高週期的斐波那契 OTE」（只顯示與警報，不下單）：
+//   在選定週期上：前一段 L1→H1，回檔極值 A 落在 0.618～0.786，收盤突破 H1（BOS）後成立；
+//   突破後的新高為 B，A→B 再畫 0.618～0.786，與 A 之後留下的同向 FVG 重疊處 = 進場框；目標 1.272～1.414
+indicator("HTF 蠟燭", overlay=true, max_boxes_count=220, max_lines_count=220, max_labels_count=80, max_bars_back=500)
 
 autoTf = input.bool(false, "依圖表週期自動選擇（打開後會忽略下方填的週期）")
 tfIn1 = input.timeframe("15", "週期 1", inline="t1")
@@ -24,6 +27,17 @@ gg    = input.float(4.0, "每組之間的間距（K 棒數）", minval=0.5, maxv
 offs  = input.float(6.0, "和最新 K 棒的距離（K 棒數）", minval=0.5, maxval=40, step=0.5)
 upCol = input.color(#089981, "上漲顏色")
 dnCol = input.color(#F23645, "下跌顏色")
+
+// ---- 斐波那契 OTE（較高週期計算，只顯示、不下單） ----
+gF = "斐波那契 OTE（較高週期）"
+showFib  = input.bool(true, "顯示較高週期的斐波那契 OTE", group=gF)
+fibTf    = input.timeframe("60", "計算用的週期（要比圖表大）", group=gF)
+fibSz    = input.int(5, "擺動點長度（該週期的 K 棒數；LuxAlgo 內部結構 = 5）", minval=2, maxval=50, group=gF)
+fOteHi   = input.float(0.618, "OTE 起點（回撤比例）", minval=0.3, maxval=0.95, step=0.001, group=gF)
+fOteLo   = input.float(0.786, "OTE 終點（回撤比例）", minval=0.4, maxval=1.0, step=0.001, group=gF)
+fNeedBos = input.bool(true, "突破必須是 BOS（順勢延續，不含 CHoCH）", group=gF)
+fExpire  = input.int(30, "BOS 後最多等幾根（該週期的 K 棒）就取消", minval=3, maxval=300, group=gF)
+fExtR    = input.float(30, "框線往右延伸幾根（圖表 K 棒）", minval=5, maxval=200, step=1, group=gF)
 
 // 自動模式：從 15m、1H、4H、1D、1W 依序挑出比圖表大的前 4 個
 int chSec = timeframe.in_seconds()
@@ -149,5 +163,212 @@ if barstate.islast
             string cd = remain > 0 ? f_cd(remain) : "--"
             array.push(lbs, label.new(f_x(u0 + groupW / 2), topP, array.get(names, g) + (upNow ? " ▲" : " ▼") + "\n(" + cd + ")", xloc=xloc.bar_time,
                  color=color.new(color.white, 100), textcolor=upNow ? upCol : dnCol, style=label.style_label_down, size=size.small))
+
+// ---------- 斐波那契 OTE：在較高週期計算（request.security），結果畫在目前圖表 ----------
+// 回傳 [方向, H1/L1 突破價, 前一段長度, H1 時間, BOS 時間, A, A 時間, B, B 時間, 進場框上, 進場框下, 新一段 OTE 上, 新一段 OTE 下]
+f_fib(int sz, float oHi, float oLo, bool needBos, int expire) =>
+    var int leg = 0
+    var float pH = na
+    var int pHB = na
+    var int pHT = na
+    var bool pHCr = false
+    var float pL = na
+    var int pLB = na
+    var int pLT = na
+    var bool pLCr = false
+    var float legLB = na
+    var float legHB = na
+    var int tr = 0
+    var array<int>   fvD = array.new_int()
+    var array<float> fvH = array.new_float()
+    var array<float> fvL = array.new_float()
+    var array<int>   fvT = array.new_int()
+    var int dir = 0
+    var float lv = na
+    var float rng = na
+    var int tHB = na
+    var int tArm = na
+    var int armB = na
+    var float fA = na
+    var int tA = na
+    var float fB = na
+    var int tB = na
+    var float eTop = na
+    var float eBot = na
+    var float oTop = na
+    var float oBot = na
+    float hN = ta.highest(sz)
+    float lN = ta.lowest(sz)
+    float pHPrev = pH
+    float pLPrev = pL
+    // 擺動點（和 LuxAlgo 的 leg 判斷相同）
+    int nl = leg
+    if high[sz] > hN
+        nl := 0
+    else if low[sz] < lN
+        nl := 1
+    if nl != leg
+        if nl == 1
+            legHB := pH
+            pL := low[sz]
+            pLB := bar_index - sz
+            pLT := time[sz]
+            pLCr := false
+        else
+            legLB := pL
+            pH := high[sz]
+            pHB := bar_index - sz
+            pHT := time[sz]
+            pHCr := false
+        leg := nl
+    // FVG：收盤穿越遠端就失效；新的 3 根 K 棒缺口加入
+    int nF = array.size(fvD)
+    if nF > 0
+        for i = nF - 1 to 0
+            if (array.get(fvD, i) == 1 and close < array.get(fvL, i)) or (array.get(fvD, i) == -1 and close > array.get(fvH, i))
+                array.remove(fvD, i)
+                array.remove(fvH, i)
+                array.remove(fvL, i)
+                array.remove(fvT, i)
+    if bar_index >= 2 and low > high[2]
+        array.push(fvD, 1)
+        array.push(fvH, low)
+        array.push(fvL, high[2])
+        array.push(fvT, time)
+    else if bar_index >= 2 and high < low[2]
+        array.push(fvD, -1)
+        array.push(fvH, low[2])
+        array.push(fvL, high)
+        array.push(fvT, time)
+    if array.size(fvD) > 60
+        array.shift(fvD)
+        array.shift(fvH)
+        array.shift(fvL)
+        array.shift(fvT)
+    // 向上突破 H1：回檔低點 A 落在 L1→H1 的 OTE 區 → 做多設定成立
+    if not na(pH) and not na(pHPrev) and close > pH and close[1] <= pHPrev and not pHCr
+        int trB = tr
+        pHCr := true
+        tr := 1
+        if (not needBos or trB == 1) and not na(legLB) and pH - legLB > 0
+            float aMin = na
+            int aOff = 0
+            for m = bar_index - pHB to 0
+                if na(aMin) or low[m] < aMin
+                    aMin := low[m]
+                    aOff := m
+            float r = (pH - aMin) / (pH - legLB)
+            if r >= oHi and r <= oLo
+                dir := 1
+                lv := pH
+                rng := pH - legLB
+                tHB := pHT
+                tArm := time
+                armB := bar_index
+                fA := aMin
+                tA := time[aOff]
+                fB := high
+                tB := time
+    // 向下跌破 L1：反彈高點 A 落在 H1→L1 的 OTE 區 → 做空設定成立
+    if not na(pL) and not na(pLPrev) and close < pL and close[1] >= pLPrev and not pLCr
+        int trB2 = tr
+        pLCr := true
+        tr := -1
+        if (not needBos or trB2 == -1) and not na(legHB) and legHB - pL > 0
+            float aMax = na
+            int aOff2 = 0
+            for m = bar_index - pLB to 0
+                if na(aMax) or high[m] > aMax
+                    aMax := high[m]
+                    aOff2 := m
+            float r2 = (aMax - pL) / (legHB - pL)
+            if r2 >= oHi and r2 <= oLo
+                dir := -1
+                lv := pL
+                rng := legHB - pL
+                tHB := pLT
+                tArm := time
+                armB := bar_index
+                fA := aMax
+                tA := time[aOff2]
+                fB := low
+                tB := time
+    // 設定成立後：更新 B、新一段 OTE、與 FVG 重疊的進場框；收盤越過 A 或等太久就取消
+    if dir != 0
+        if (dir == 1 and high > fB) or (dir == -1 and low < fB)
+            fB := dir == 1 ? high : low
+            tB := time
+        float leg2 = math.abs(fB - fA)
+        oBot := dir == 1 ? fB - oLo * leg2 : fB + oHi * leg2
+        oTop := dir == 1 ? fB - oHi * leg2 : fB + oLo * leg2
+        eTop := na
+        eBot := na
+        float best = 0.0
+        int nF2 = array.size(fvD)
+        if nF2 > 0
+            for i = 0 to nF2 - 1
+                if array.get(fvD, i) == dir and array.get(fvT, i) > tA
+                    float t = math.min(array.get(fvH, i), oTop)
+                    float b = math.max(array.get(fvL, i), oBot)
+                    if t - b > best
+                        best := t - b
+                        eTop := t
+                        eBot := b
+        if (dir == 1 and close < fA) or (dir == -1 and close > fA) or bar_index - armB > expire
+            dir := 0
+    [dir, lv, rng, tHB, tArm, fA, tA, fB, tB, eTop, eBot, oTop, oBot]
+
+[fD, fLv, fRng, fTHB, fTArm, fAa, fTA, fBb, fTB, fETop, fEBot, fOTop, fOBot] = request.security(syminfo.tickerid, fibTf, f_fib(fibSz, fOteHi, fOteLo, fNeedBos, fExpire), lookahead=barmerge.lookahead_off)
+bool fibOk = showFib and timeframe.in_seconds(fibTf) > chSec
+
+var array<box>   fBxs = array.new<box>()
+var array<line>  fLns = array.new<line>()
+var array<label> fLbs = array.new<label>()
+if barstate.islast
+    for b in fBxs
+        box.delete(b)
+    for l in fLns
+        line.delete(l)
+    for lb in fLbs
+        label.delete(lb)
+    array.clear(fBxs)
+    array.clear(fLns)
+    array.clear(fLbs)
+    if fibOk and fD != 0
+        string tfn = f_name(fibTf)
+        int xEnd = f_x(fExtR)
+        color cDir = fD == 1 ? #089981 : #F23645
+        float z1 = fLv - fD * fOteHi * fRng
+        float z2 = fLv - fD * fOteLo * fRng
+        // 綠框 OTE（前一段）與 BOS
+        array.push(fBxs, box.new(fTHB, math.max(z1, z2), fTArm, math.min(z1, z2), xloc=xloc.bar_time, border_color=color.new(cDir, 30), bgcolor=color.new(cDir, 82), text="OTE " + str.tostring(fOteHi) + "–" + str.tostring(fOteLo) + "（" + tfn + "）", text_size=size.tiny, text_color=cDir, text_halign=text.align_left, text_valign=fD == 1 ? text.align_bottom : text.align_top))
+        array.push(fLns, line.new(fTHB, fLv, fTArm, fLv, xloc=xloc.bar_time, color=cDir, width=2))
+        array.push(fLbs, label.new(fTArm, fLv, "BOS（" + tfn + "）", xloc=xloc.bar_time, style=fD == 1 ? label.style_label_down : label.style_label_up, color=color.new(color.white, 100), textcolor=cDir, size=size.tiny))
+        array.push(fLbs, label.new(fTA, fAa, "A", xloc=xloc.bar_time, style=fD == 1 ? label.style_label_up : label.style_label_down, color=color.new(#ffd54f, 0), textcolor=color.black, size=size.tiny))
+        array.push(fLbs, label.new(fTB, fBb, "B", xloc=xloc.bar_time, style=fD == 1 ? label.style_label_down : label.style_label_up, color=color.new(#ffd54f, 0), textcolor=color.black, size=size.tiny))
+        // 新一段 0.618 / 0.786
+        array.push(fLns, line.new(fTB, fOTop, xEnd, fOTop, xloc=xloc.bar_time, color=color.new(#42a5f5, 20), style=line.style_dashed))
+        array.push(fLns, line.new(fTB, fOBot, xEnd, fOBot, xloc=xloc.bar_time, color=color.new(#42a5f5, 20), style=line.style_dashed))
+        // 停損參考：A 點
+        array.push(fLns, line.new(fTA, fAa, xEnd, fAa, xloc=xloc.bar_time, color=color.new(#ef5350, 30), style=line.style_dotted))
+        array.push(fLbs, label.new(xEnd, fAa, "SL 參考（A）: " + str.tostring(fAa, format.mintick), xloc=xloc.bar_time, style=label.style_label_left, color=color.new(#ef5350, 40), textcolor=color.white, size=size.tiny))
+        if not na(fETop)
+            float ePx = fD == 1 ? fETop : fEBot
+            float leg2 = math.abs(fBb - fAa)
+            float t1 = ePx + fD * 1.272 * leg2
+            float t2 = ePx + fD * 1.414 * leg2
+            array.push(fBxs, box.new(fTArm, fETop, xEnd, fEBot, xloc=xloc.bar_time, border_color=#2157f3, bgcolor=color.new(#2157f3, 75), text=(fD == 1 ? "Entry Long" : "Entry Short") + "（" + tfn + "）", text_size=size.tiny, text_color=#2157f3, text_halign=text.align_left))
+            array.push(fBxs, box.new(fTArm, math.max(t1, t2), xEnd, math.min(t1, t2), xloc=xloc.bar_time, border_color=color.new(color.orange, 30), bgcolor=color.new(color.orange, 85), text="Target 1.272–1.414", text_size=size.tiny, text_color=color.orange, text_halign=text.align_left))
+
+// 警報（用「任何 alert() 函式呼叫」建立）：設定成立一次、價格回到進場框一次
+var int alertArm = na
+var int alertTouch = na
+if fibOk and fD != 0 and not na(fTArm)
+    if alertArm != fTArm
+        alertArm := fTArm
+        alert("斐波那契 OTE（" + f_name(fibTf) + "）設定成立：" + (fD == 1 ? "做多" : "做空") + "，BOS " + str.tostring(fLv, format.mintick) + "，A " + str.tostring(fAa, format.mintick), alert.freq_once_per_bar)
+    if not na(fETop) and alertTouch != fTArm and high >= fEBot and low <= fETop
+        alertTouch := fTArm
+        alert("價格回到斐波那契進場框（" + f_name(fibTf) + "）：" + str.tostring(fEBot, format.mintick) + " – " + str.tostring(fETop, format.mintick), alert.freq_once_per_bar)
 
 plot(close, "close", display=display.none)
