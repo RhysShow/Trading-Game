@@ -1,0 +1,933 @@
+//@version=5
+// 3+1 SOP 解答版 v7：v5 + 交易方向開關（雙向／只做多／只做空）+ 3+1 的 ATR 最小停損距離
+//   （v5 = v4 + 盤中預覽訊號 + 偏見燈號 + 突刺進場；斐波那契 OTE 已移到「HTF 蠟燭」指標，只顯示不下單）
+//   編號跳過 v6：3plus1_sop_v6.pine 是舊的分批進出實驗版，保留不動
+// 結構與訂單塊（OB）的判斷沿用 v4，和 LuxAlgo「Smart Money Concepts」相同的設計
+// 右上角「偏見燈號」：用各週期最近兩根已收盤的 K 棒判斷這一根的方向（綠燈偏多、紅燈偏空）
+//   第一根綠 K：第二根收盤高於第一根最高點 → 偏多（目標：第二根的高點），否則偏空（目標：第二根的低點）
+//   第一根紅 K：第二根收盤低於第一根最低點 → 偏空（目標：第二根的低點），否則偏多（目標：第二根的高點）
+// 適用週期：任何週期都可以（5 分、15 分、60 分…），所有判斷都以「目前圖表的 K 棒」計算。
+//   注意：以 K 棒數計算的設定（Swing 結構長度、回踩確認視窗、突刺 Kill Zone 除外的其他設定）在不同週期代表的時間不同，
+//   例如「等 60 根」在 5 分圖是 5 小時、在 60 分圖是 2.5 天，可依週期自行調整。
+//   - 結構：內部結構（5 根）與 Swing 結構（預設 50 根）兩套擺動點，以收盤突破；內部突破若與 Swing 擺動點相同則歸 Swing
+//   - OB：突破時，取「被突破的擺動點」到「突破前一根」之間最低（多）／最高（空）的 K 棒，
+//        波動過大的 K 棒（幅度 >= 2 倍 ATR200）先把高低點對調；預設以影線碰到遠端邊界即失效；最多保留 100 個
+//   - 畫面：半透明、無邊框、延伸到右側，只顯示最近的幾個
+//   原始碼授權：CC BY-NC-SA 4.0，© LuxAlgo。本檔是依其設計重新撰寫的衍生作品，
+//   同樣以 CC BY-NC-SA 4.0 授權：需標示來源、不得商業使用、衍生作品須以相同授權分享。
+// 以下為 3+1 SOP 規則（對應 index.html 遊戲）：
+//   1. 連招：同方向的 CH / BOS / FVG / OB 出現 3 種以上（反向 FVG 忽略；反向 CH/BOS/OB 重置）
+//      BOS 必須收在「CH 之後的最高點（做空：最低點）」之外才算有效
+//   2. 回踩：連招成立後，第一根碰到最近同向 OB（OB1）的 K 棒 = 第 1 根，之後算到第 3 根
+//   3. 確認：確認 K 棒收盤同時越過 OB 外緣與第 1 根實體中點，收線進場（預設第 2 根起）
+//   4. 停損：由成立位置往下（空：往上）找同向 OB，放在第 2 個 OB 的完整影線之外；停利：R 倍風險
+strategy("3+1 SOP 解答版 v7", overlay=true, calc_on_every_tick=true, initial_capital=10000,
+     default_qty_type=strategy.cash, default_qty_value=1000,
+     commission_type=strategy.commission.percent, commission_value=0.05,
+     process_orders_on_close=true, pyramiding=0,
+     max_bars_back=500, max_labels_count=500, max_lines_count=500, max_boxes_count=500)
+
+rr       = input.float(1.0, "停利 R（0 = 不設停利）", minval=0.0, step=0.5)
+confirmFrom = input.int(2, "回踩確認最早在第幾根（第 1 根 = 首次碰到 OB1）", minval=1, maxval=3)
+needOb2  = input.bool(false, "必須找到兩個 OB 才算標準進場（停損放第 2 個）")
+fvgZone  = input.bool(true, "沒有 OB 時，改用 FVG 當回踩區（停損放 FVG 之外）")
+engulfExtra = input.bool(false, "額外要求大實體並突破前一根高點／低點（舊版吞噬條件）")
+showLbl  = input.bool(true, "顯示進場標籤與 SL / TP 線")
+showEv   = input.bool(false, "顯示 CH / BOS 小三角形（K 棒上）")
+showLines = input.bool(true, "顯示 CH / BOS 突破線與文字")
+showZones = input.bool(true, "顯示 OB / FVG 框框")
+maxOb    = input.int(5, "OB 最多同時顯示幾個（最近的有效 OB，LuxAlgo 預設 5）", minval=1, maxval=30)
+maxFvg   = input.int(3, "FVG 最多同時顯示幾個", minval=1, maxval=30)
+keepDead = input.bool(true, "保留已失效的框框（變淡，回顧歷史用）")
+swingLen = input.int(50, "Swing 結構長度（LuxAlgo 預設 50）", minval=10, maxval=200)
+mitSrc   = input.string("High/Low", "OB 失效判斷（LuxAlgo 預設 High/Low）", options=["High/Low", "Close"])
+
+// ---- 訊號顯示 ----
+liveMarks = input.bool(false, "盤中預覽訊號：未收線先標示，收線不合格自動取消（只在即時行情出現）", group="訊號顯示")
+useSop    = input.bool(true, "啟用 3+1 SOP 進場", group="訊號顯示")
+tradeDir  = input.string("雙向", "交易方向（3+1 與突刺都適用）", options=["雙向", "只做多", "只做空"], group="訊號顯示")
+
+// ---- 3+1 最小停損距離 ----
+gM = "3+1 最小停損距離"
+sopAtrMin  = input.float(1.0, "停損距離至少幾倍 ATR(14)（0 = 不限，和 v5 相同）", minval=0, step=0.1, group=gM)
+sopAtrMode = input.string("把停損推遠到最小距離", "停損太窄時", options=["把停損推遠到最小距離", "略過這個訊號"], group=gM)
+
+
+// ---- 偏見燈號 ----
+gB = "偏見燈號"
+showBias = input.bool(true, "顯示右上角偏見燈號", group=gB)
+biasPos  = input.string("右上", "燈號位置", options=["右上", "右下", "左上", "左下"], group=gB)
+bTf1 = input.timeframe("D", "週期 1", group=gB)
+bTf2 = input.timeframe("240", "週期 2", group=gB)
+bTf3 = input.timeframe("60", "週期 3", group=gB)
+bTf4 = input.timeframe("30", "週期 4", group=gB)
+bTf5 = input.timeframe("15", "週期 5", group=gB)
+biasFilter = input.bool(false, "只做與指定週期偏見同方向的 3+1 訊號", group=gB)
+bTfF = input.timeframe("60", "過濾用的週期", group=gB)
+
+// ---- 持倉中的新訊號 ----
+// ---- 停損停利標示 ----
+gT = "停損停利標示"
+showLvls  = input.bool(true, "進場時在圖上標示停損／停利的位置與價格", group=gT)
+showEntry = input.bool(true, "同時標示進場價", group=gT)
+nTp       = input.int(3, "停利目標數量（TP1 = 上方的「停利 R」）", minval=1, maxval=3, group=gT)
+tp2R      = input.float(1.5, "TP2 倍數（R）", minval=0.1, step=0.1, group=gT)
+tp3R      = input.float(2.0, "TP3 倍數（R）", minval=0.1, step=0.1, group=gT)
+keepLast  = input.bool(true, "只保留最新一筆的標示", group=gT)
+lvlExt    = input.int(15, "標示線延伸到最新 K 棒右邊幾根", minval=3, maxval=60, group=gT)
+clearOnExit = input.bool(true, "部位出場後清除標示（圖表比較乾淨）", group=gT)
+
+// ---- 出場管理 ----
+gX = "出場管理"
+beAfterTp1 = input.bool(true, "突刺到 TP1 後，剩下部位的停損移到進場價（保本）", group=gX)
+timeStop   = input.int(100, "時間停損：持倉超過幾根 K 棒就以收盤價平倉（0 = 關閉；5 分圖 100 根約 8 小時）", minval=0, maxval=5000, group=gX)
+
+// ---- 掃蕩型 OB／突刺進場 ----
+gS = "掃蕩型 OB／突刺進場"
+showSweep  = input.bool(true, "標示掃蕩型 OB（形成時刺穿前低／前高又收回，視為高品質 OB）", group=gS)
+useSpike   = input.bool(true, "啟用突刺進場：第一次回踩掃蕩型 OB，刺進去後收回 OB 外緣就進場", group=gS)
+spikeTrend = input.bool(true, "突刺進場要求內部結構同方向（做多要多頭、做空要空頭）", group=gS)
+spShowBlk  = input.bool(true, "持倉中出現的突刺訊號也標示（灰色，不進場）", group=gS)
+spDebug    = input.bool(false, "顯示被過濾掉的突刺（灰色 ×，並列出沒通過的條件）", group=gS)
+spR1 = input.float(1.0, "突刺 TP1（R）", minval=0.1, step=0.1, inline="sp", group=gS)
+spR2 = input.float(1.5, "TP2", minval=0.1, step=0.1, inline="sp", group=gS)
+spR3 = input.float(2.0, "TP3", minval=0.1, step=0.1, inline="sp", group=gS)
+// 突刺進場的出場：TP1、TP2 各平 1/3，TP3 平掉剩下的；停損在 OB 遠端邊界之外
+// ---- 突刺進場的 SMC／ICT 過濾（回測後加入；建議一次只改一項比較結果） ----
+gF = "突刺進場過濾"
+spBuf     = input.float(0.25, "停損再往 OB 外加幾倍 ATR（0 = 剛好在 OB 邊緣）", minval=0, step=0.05, group=gF)
+spMinRisk = input.float(0.25, "停損距離至少佔價格幾 %（太窄時手續費吃掉獲利；0 = 不限）", minval=0, step=0.05, group=gF)
+spBias    = input.bool(true, "要求大週期偏見同方向", group=gF)
+spBiasTf  = input.timeframe("60", "偏見週期", group=gF)
+spPD      = input.bool(true, "做多只在折價區、做空只在溢價區（Swing 區間 50% 為界）", group=gF)
+spDisp    = input.bool(true, "OB 之後要有位移：突破那段留下同向 FVG", group=gF)
+spSess    = input.bool(false, "只在 Kill Zone 時段進場", group=gF)
+spSessStr = input.session("0700-1000,1230-1530", "Kill Zone 時段（UTC，預設倫敦開盤與紐約開盤）", group=gF)
+spWick    = input.bool(false, "突刺 K 棒的影線要夠長（刺入那側影線 ≥ 整根的 40%）", group=gF)
+// TP2、TP3 只是參考價位，實際停利仍以 TP1 出場
+
+posMode = input.string("隱藏（維持原部位）", "持倉中又出現新的 3+1 訊號時", options=["隱藏（維持原部位）", "顯示為灰色（不進場）", "反向訊號：平倉並反手"], group="訊號顯示")
+
+// 一組 K 棒的偏見：較舊的一根 = k+1、較新的一根 = k（0 = 第一根開收相同，無法判斷）
+f_pair(int k) =>
+    close[k + 1] > open[k + 1] ? (close[k] > high[k + 1] ? 1 : -1) : close[k + 1] < open[k + 1] ? (close[k] < low[k + 1] ? -1 : 1) : 0
+
+// 用該週期「最近兩根已收盤」的 K 棒判斷目前這一根的偏見；
+// 無法判斷時，往前一組一組找（最多往前 3 組），沿用最近一組能判斷的趨勢
+// 回傳 [方向, 目標價, 目前這根是否已碰到目標, 是否沿用前一組]
+f_bias() =>
+    int p1 = f_pair(1)
+    int p2 = f_pair(2)
+    int p3 = f_pair(3)
+    int p4 = f_pair(4)
+    int b = p1 != 0 ? p1 : p2 != 0 ? p2 : p3 != 0 ? p3 : p4
+    float tgt = b == 1 ? high[1] : b == -1 ? low[1] : na
+    bool hit = b == 1 ? high >= high[1] : b == -1 ? low <= low[1] : false
+    [b, tgt, hit, p1 == 0 and b != 0]
+
+[bs1, bt1, bh1, bf1] = request.security(syminfo.tickerid, bTf1, f_bias(), lookahead=barmerge.lookahead_on)
+[bs2, bt2, bh2, bf2] = request.security(syminfo.tickerid, bTf2, f_bias(), lookahead=barmerge.lookahead_on)
+[bs3, bt3, bh3, bf3] = request.security(syminfo.tickerid, bTf3, f_bias(), lookahead=barmerge.lookahead_on)
+[bs4, bt4, bh4, bf4] = request.security(syminfo.tickerid, bTf4, f_bias(), lookahead=barmerge.lookahead_on)
+[bs5, bt5, bh5, bf5] = request.security(syminfo.tickerid, bTf5, f_bias(), lookahead=barmerge.lookahead_on)
+[bsF, btF, bhF, bfF] = request.security(syminfo.tickerid, bTfF, f_bias(), lookahead=barmerge.lookahead_on)
+[bsP, btP, bhP, bfP] = request.security(syminfo.tickerid, spBiasTf, f_bias(), lookahead=barmerge.lookahead_on)
+
+color cBull = #089981
+color cBear = #F23645
+color cGray = #878b94
+color cObBull = color.new(#3179f5, 80)
+color cObBear = color.new(#f77c80, 80)
+color cFvgBull = color.new(#00c878, 85)
+color cFvgBear = color.new(#ff4d5a, 85)
+color cNone = color.new(color.white, 100)
+color cDead = color.new(color.gray, 92)
+
+atrv = ta.atr(14)
+
+// ---------- 狀態 ----------
+// 結構狀態：索引 0 = 內部結構（5 根），1 = Swing 結構
+var array<int>   legArr = array.new<int>(2, 0)
+var array<float> pHL = array.new<float>(2, na)
+var array<float> pHPrev = array.new<float>(2, na)
+var array<int>   pHBar = array.new<int>(2, 0)
+var array<bool>  pHCr = array.new<bool>(2, false)
+var array<float> pLL = array.new<float>(2, na)
+var array<float> pLPrev = array.new<float>(2, na)
+var array<int>   pLBar = array.new<int>(2, 0)
+var array<bool>  pLCr = array.new<bool>(2, false)
+var array<int>   trArr = array.new<int>(2, 0)
+var array<int>   chIdxArr = array.new<int>(2, -1)
+var array<float> sinceHArr = array.new<float>(2, na)
+var array<float> sinceLArr = array.new<float>(2, na)
+var array<float> parsedHighs = array.new<float>()
+var array<float> rawH = array.new<float>()
+var array<float> rawL = array.new<float>()
+var array<float> legLB = array.new<float>(2, na)   // 形成擺動高點時，前一個擺動低點（波段起點）
+var array<float> legHB = array.new<float>(2, na)   // 形成擺動低點時，前一個擺動高點
+var array<int>   fvgAt = array.new_int()
+
+
+// 停損停利標示
+var array<line>  lvlLines = array.new<line>()
+var array<label> lvlLbls  = array.new<label>()
+var bool lvlLive = false
+var int  lvlBar = na
+var array<float> parsedLows = array.new<float>()
+
+var array<int>   obDir = array.new_int()
+var array<float> obHi  = array.new_float()
+var array<float> obLo  = array.new_float()
+var array<box>   obBox = array.new<box>()
+var array<bool>  obSw  = array.new_bool()     // 是否為掃蕩型 OB
+var array<bool>  obTch = array.new_bool()     // 是否已被回踩過（只有第一次回踩能觸發突刺進場）
+var array<int>   obAt  = array.new_int()      // 建立的 K 棒
+var array<bool>  obDisp = array.new_bool()    // 形成後是否留下同向 FVG（位移）
+// 內部結構的擺動點紀錄（判斷 OB 是否掃過前低／前高）
+var array<float> ivLoLv = array.new_float()
+var array<int>   ivLoBar = array.new_int()
+var array<float> ivHiLv = array.new_float()
+var array<int>   ivHiBar = array.new_int()
+var array<float> rawC = array.new<float>()
+var array<int>   fvgDir = array.new_int()
+var array<float> fvgHi  = array.new_float()
+var array<float> fvgLo  = array.new_float()
+var array<box>   fvgBox = array.new<box>()
+
+// SOP 連招狀態
+var int  cDir = 0
+var bool hCH = false
+var bool hBOS = false
+var bool hFVG = false
+var bool hOB = false
+var bool cUsed = false
+var int  cFirst = -1
+var float zHi = na
+var float zLo = na
+var float firstMid = na
+var int   zKind = 0
+var int  cArmed = -1
+var int  sigCount = 0
+
+// 每根 K 棒的事件佇列（type: 1=CH 2=BOS 3=FVG 4=OB）
+var array<int> sigDir = array.new_int()
+var array<int> sigTyp = array.new_int()
+array.clear(sigDir)
+array.clear(sigTyp)
+
+bool evCHb = false
+bool evCHs = false
+bool evBOSb = false
+bool evBOSs = false
+bool evBOSbBad = false
+bool evBOSsBad = false
+
+// 在 (方向, 價位) 條件下，找出 key 小於 maxKey 的最近同向區域；回傳索引，找不到回傳 -1
+// key：做多 = 區域上緣（越高越近），做空 = -下緣
+f_best(array<int> aD, array<float> aH, array<float> aL, int dir, float px, float maxKey) =>
+    int idx = -1
+    float bk = na
+    int n = array.size(aD)
+    if n > 0
+        for i = 0 to n - 1
+            if array.get(aD, i) == dir
+                float h = array.get(aH, i)
+                float l = array.get(aL, i)
+                bool sideOk = dir == 1 ? l < px : h > px
+                if sideOk
+                    float key = dir == 1 ? h : -l
+                    if key < maxKey and (idx == -1 or key > bk)
+                        idx := i
+                        bk := key
+    idx
+
+// ---------- 選用：舊版吞噬條件（大實體並突破前一根高點／低點） ----------
+f_engulf(int d) =>
+    bool ok = bar_index >= 1 and not na(atrv) and math.abs(close - open) >= 0.5 * atrv
+    if ok
+        if d == 1
+            ok := close > open and close > high[1]
+        else
+            ok := close < open and close < low[1]
+    ok
+
+// FVG 失效（收盤穿越遠端邊界）
+int nFv = array.size(fvgDir)
+if nFv > 0
+    for i = nFv - 1 to 0
+        int d1 = array.get(fvgDir, i)
+        if (d1 == 1 and close < array.get(fvgLo, i)) or (d1 == -1 and close > array.get(fvgHi, i))
+            if showZones
+                if keepDead
+                    box.set_right(array.get(fvgBox, i), bar_index)
+                    box.set_bgcolor(array.get(fvgBox, i), cDead)
+                else
+                    box.delete(array.get(fvgBox, i))
+                array.remove(fvgBox, i)
+            array.remove(fvgDir, i)
+            array.remove(fvgHi, i)
+            array.remove(fvgLo, i)
+            array.remove(fvgAt, i)
+
+// ---------- 1. 擺動點與結構（LuxAlgo 設計：leg 判斷擺動點，收盤突破） ----------
+float atr200 = ta.atr(200)
+bool hiVol = not na(atr200) and (high - low) >= 2 * atr200
+array.push(parsedHighs, hiVol ? low : high)
+array.push(parsedLows, hiVol ? high : low)
+array.push(rawH, high)
+array.push(rawL, low)
+array.push(rawC, close)
+
+float hi5 = ta.highest(5)
+float lo5 = ta.lowest(5)
+float hiS = ta.highest(swingLen)
+float loS = ta.lowest(swingLen)
+
+for s = 0 to 1
+    int sz = s == 0 ? 5 : swingLen
+    float hN = s == 0 ? hi5 : hiS
+    float lN = s == 0 ? lo5 : loS
+    array.set(pHPrev, s, array.get(pHL, s))
+    array.set(pLPrev, s, array.get(pLL, s))
+    int oldLeg = array.get(legArr, s)
+    int newLeg = oldLeg
+    if high[sz] > hN
+        newLeg := 0
+    else if low[sz] < lN
+        newLeg := 1
+    array.set(legArr, s, newLeg)
+    if newLeg != oldLeg
+        if newLeg == 1
+            array.set(legHB, s, array.get(pHL, s))
+            array.set(pLL, s, low[sz])
+            array.set(pLBar, s, bar_index - sz)
+            if s == 0
+                array.push(ivLoLv, low[sz])
+                array.push(ivLoBar, bar_index - sz)
+                if array.size(ivLoLv) > 20
+                    array.shift(ivLoLv)
+                    array.shift(ivLoBar)
+            array.set(pLCr, s, false)
+        else
+            array.set(legLB, s, array.get(pLL, s))
+            array.set(pHL, s, high[sz])
+            array.set(pHBar, s, bar_index - sz)
+            if s == 0
+                array.push(ivHiLv, high[sz])
+                array.push(ivHiBar, bar_index - sz)
+                if array.size(ivHiLv) > 20
+                    array.shift(ivHiLv)
+                    array.shift(ivHiBar)
+            array.set(pHCr, s, false)
+
+// ---------- 2. 結構突破（先內部、後 Swing）並建立 OB ----------
+bool newBullOb = false
+bool newBearOb = false
+
+for s = 0 to 1
+    // ===== 向上突破 =====
+    float lvH = array.get(pHL, s)
+    float lvHp = array.get(pHPrev, s)
+    float swH = array.get(pHL, 1)
+    bool extraUp = s == 0 ? (na(swH) or lvH != swH) : true
+    bool xUp = not na(lvH) and not na(lvHp) and close > lvH and close[1] <= lvHp
+    if xUp and not array.get(pHCr, s) and extraUp
+        int trBeforeU = array.get(trArr, s)
+        bool isCHu = trBeforeU == -1
+        bool validU = true
+        if isCHu
+            array.set(chIdxArr, s, bar_index)
+        else if array.get(chIdxArr, s) >= 0
+            validU := close > array.get(sinceHArr, s)
+        array.set(pHCr, s, true)
+        array.set(trArr, s, 1)
+        if validU
+            array.push(sigDir, 1)
+            array.push(sigTyp, isCHu ? 1 : 2)
+        if isCHu
+            evCHb := true
+        else if validU
+            evBOSb := true
+        else
+            evBOSbBad := true
+        int pbU = array.get(pHBar, s)
+        if showLines
+            color lcU = validU ? cBull : cGray
+            line.new(pbU, lvH, bar_index, lvH, color=lcU, style=s == 0 ? line.style_dashed : line.style_solid)
+            label.new(math.round((pbU + bar_index) / 2), lvH, isCHu ? "CHoCH" : (validU ? "BOS" : "BOS✗"), color=cNone, textcolor=lcU, style=label.style_label_down, size=s == 0 ? size.tiny : size.small)
+        if s == 0
+            // 多方 OB：被突破的擺動高點 ～ 突破前一根之間，parsedLow 最低的那根 K 棒
+            int mi = pbU
+            float mv = array.get(parsedLows, pbU)
+            if bar_index - 1 > pbU
+                for i = pbU + 1 to bar_index - 1
+                    if array.get(parsedLows, i) < mv
+                        mv := array.get(parsedLows, i)
+                        mi := i
+            float oHiU = array.get(parsedHighs, mi)
+            float oLoU = array.get(parsedLows, mi)
+            // 掃蕩型：OB 那根的最低點刺穿它之前的某個內部擺動低點，收盤又收回該低點之上
+            bool swU = false
+            int nLo = array.size(ivLoLv)
+            if nLo > 0
+                for q = nLo - 1 to 0
+                    int qb = array.get(ivLoBar, q)
+                    if qb < mi and mi - qb <= 150
+                        float qv = array.get(ivLoLv, q)
+                        if array.get(rawL, mi) < qv and array.get(rawC, mi) > qv
+                            swU := true
+                            break
+            if array.size(obDir) >= 100
+                if showZones
+                    box.delete(array.get(obBox, 0))
+                    array.remove(obBox, 0)
+                array.remove(obDir, 0)
+                array.remove(obHi, 0)
+                array.remove(obLo, 0)
+                array.remove(obSw, 0)
+                array.remove(obTch, 0)
+                array.remove(obAt, 0)
+                array.remove(obDisp, 0)
+            array.push(obDir, 1)
+            array.push(obHi, oHiU)
+            array.push(obLo, oLoU)
+            // 位移：OB 之後到突破這根之間，有沒有留下多方 FVG
+            bool dpU = false
+            if bar_index >= mi + 2
+                for q = mi + 2 to bar_index
+                    if array.get(rawL, q) > array.get(rawH, q - 2)
+                        dpU := true
+                        break
+            array.push(obSw, swU)
+            array.push(obTch, false)
+            array.push(obAt, bar_index)
+            array.push(obDisp, dpU)
+            if showZones
+                bool hq = swU and showSweep
+                array.push(obBox, box.new(mi, oHiU, bar_index, oLoU, border_color=hq ? color.new(#3179f5, 0) : cNone, border_width=hq ? 2 : 1, bgcolor=hq ? color.new(#3179f5, 65) : cObBull, text=hq ? "掃蕩 OB" : "", text_size=size.tiny, text_color=#3179f5, text_halign=text.align_left, text_valign=text.align_top))
+            newBullOb := true
+
+    // ===== 向下突破 =====
+    float lvL = array.get(pLL, s)
+    float lvLp = array.get(pLPrev, s)
+    float swL = array.get(pLL, 1)
+    bool extraDn = s == 0 ? (na(swL) or lvL != swL) : true
+    bool xDn = not na(lvL) and not na(lvLp) and close < lvL and close[1] >= lvLp
+    if xDn and not array.get(pLCr, s) and extraDn
+        int trBeforeD = array.get(trArr, s)
+        bool isCHd = trBeforeD == 1
+        bool validD = true
+        if isCHd
+            array.set(chIdxArr, s, bar_index)
+        else if array.get(chIdxArr, s) >= 0
+            validD := close < array.get(sinceLArr, s)
+        array.set(pLCr, s, true)
+        array.set(trArr, s, -1)
+        if validD
+            array.push(sigDir, -1)
+            array.push(sigTyp, isCHd ? 1 : 2)
+        if isCHd
+            evCHs := true
+        else if validD
+            evBOSs := true
+        else
+            evBOSsBad := true
+        int pbD = array.get(pLBar, s)
+        if showLines
+            color lcD = validD ? cBear : cGray
+            line.new(pbD, lvL, bar_index, lvL, color=lcD, style=s == 0 ? line.style_dashed : line.style_solid)
+            label.new(math.round((pbD + bar_index) / 2), lvL, isCHd ? "CHoCH" : (validD ? "BOS" : "BOS✗"), color=cNone, textcolor=lcD, style=label.style_label_up, size=s == 0 ? size.tiny : size.small)
+        if s == 0
+            // 空方 OB：被突破的擺動低點 ～ 突破前一根之間，parsedHigh 最高的那根 K 棒
+            int mj = pbD
+            float mx = array.get(parsedHighs, pbD)
+            if bar_index - 1 > pbD
+                for i = pbD + 1 to bar_index - 1
+                    if array.get(parsedHighs, i) > mx
+                        mx := array.get(parsedHighs, i)
+                        mj := i
+            float oHiD = array.get(parsedHighs, mj)
+            float oLoD = array.get(parsedLows, mj)
+            // 掃蕩型：OB 那根的最高點刺穿它之前的某個內部擺動高點，收盤又收回該高點之下
+            bool swD = false
+            int nHi = array.size(ivHiLv)
+            if nHi > 0
+                for q = nHi - 1 to 0
+                    int qb = array.get(ivHiBar, q)
+                    if qb < mj and mj - qb <= 150
+                        float qv = array.get(ivHiLv, q)
+                        if array.get(rawH, mj) > qv and array.get(rawC, mj) < qv
+                            swD := true
+                            break
+            if array.size(obDir) >= 100
+                if showZones
+                    box.delete(array.get(obBox, 0))
+                    array.remove(obBox, 0)
+                array.remove(obDir, 0)
+                array.remove(obHi, 0)
+                array.remove(obLo, 0)
+                array.remove(obSw, 0)
+                array.remove(obTch, 0)
+                array.remove(obAt, 0)
+                array.remove(obDisp, 0)
+            array.push(obDir, -1)
+            array.push(obHi, oHiD)
+            array.push(obLo, oLoD)
+            bool dpD = false
+            if bar_index >= mj + 2
+                for q = mj + 2 to bar_index
+                    if array.get(rawH, q) < array.get(rawL, q - 2)
+                        dpD := true
+                        break
+            array.push(obSw, swD)
+            array.push(obTch, false)
+            array.push(obAt, bar_index)
+            array.push(obDisp, dpD)
+            if showZones
+                bool hq2 = swD and showSweep
+                array.push(obBox, box.new(mj, oHiD, bar_index, oLoD, border_color=hq2 ? color.new(#f23645, 0) : cNone, border_width=hq2 ? 2 : 1, bgcolor=hq2 ? color.new(#f23645, 65) : cObBear, text=hq2 ? "掃蕩 OB" : "", text_size=size.tiny, text_color=#f23645, text_halign=text.align_left, text_valign=text.align_bottom))
+            newBearOb := true
+
+// 事件順序：結構事件 → 新 OB → 新 FVG
+if newBullOb
+    array.push(sigDir, 1)
+    array.push(sigTyp, 4)
+if newBearOb
+    array.push(sigDir, -1)
+    array.push(sigTyp, 4)
+
+// ---------- 3. OB 失效（LuxAlgo：預設影線碰到遠端邊界；建立後同一根就會檢查） ----------
+float bearSrc = mitSrc == "Close" ? close : high
+float bullSrc = mitSrc == "Close" ? close : low
+int nOb = array.size(obDir)
+if nOb > 0
+    for i = nOb - 1 to 0
+        int d0 = array.get(obDir, i)
+        if (d0 == -1 and bearSrc > array.get(obHi, i)) or (d0 == 1 and bullSrc < array.get(obLo, i))
+            if showZones
+                if keepDead
+                    box.set_right(array.get(obBox, i), bar_index)
+                    box.set_bgcolor(array.get(obBox, i), cDead)
+                else
+                    box.delete(array.get(obBox, i))
+                array.remove(obBox, i)
+            array.remove(obDir, i)
+            array.remove(obHi, i)
+            array.remove(obLo, i)
+            array.remove(obSw, i)
+            array.remove(obTch, i)
+            array.remove(obAt, i)
+            array.remove(obDisp, i)
+
+// ---------- 4. FVG（沿用原本的 3 根 K 棒缺口判斷） ----------
+bool fvgBull = bar_index >= 2 and not na(atrv) and low > high[2] and (low - high[2]) > 0.1 * atrv
+bool fvgBear = not fvgBull and bar_index >= 2 and not na(atrv) and high < low[2] and (low[2] - high) > 0.1 * atrv
+if fvgBull
+    array.push(sigDir, 1)
+    array.push(sigTyp, 3)
+    array.push(fvgDir, 1)
+    array.push(fvgHi, low)
+    array.push(fvgLo, high[2])
+    array.push(fvgAt, bar_index)
+    if showZones
+        array.push(fvgBox, box.new(bar_index - 2, low, bar_index, high[2], border_color=cNone, bgcolor=cFvgBull))
+if fvgBear
+    array.push(sigDir, -1)
+    array.push(sigTyp, 3)
+    array.push(fvgDir, -1)
+    array.push(fvgHi, low[2])
+    array.push(fvgLo, high)
+    array.push(fvgAt, bar_index)
+    if showZones
+        array.push(fvgBox, box.new(bar_index - 2, low[2], bar_index, high, border_color=cNone, bgcolor=cFvgBear))
+
+// 框框：右邊緣延伸到目前這根；只顯示最近的幾個，較舊的刪除（不影響判斷）
+if showZones
+    int nBx = array.size(obBox)
+    if nBx > 0
+        for i = 0 to nBx - 1
+            if i >= nBx - maxOb
+                box.set_right(array.get(obBox, i), bar_index)
+            else
+                box.delete(array.get(obBox, i))
+    int nFx = array.size(fvgBox)
+    if nFx > 0
+        for i = 0 to nFx - 1
+            if i >= nFx - maxFvg
+                box.set_right(array.get(fvgBox, i), bar_index)
+            else
+                box.delete(array.get(fvgBox, i))
+
+// ---------- 5. 連招狀態機 ----------
+int nSig = array.size(sigDir)
+if nSig > 0
+    for i = 0 to nSig - 1
+        int sd = array.get(sigDir, i)
+        int sty = array.get(sigTyp, i)
+        if sd == cDir
+            if sty == 1
+                hCH := true
+            else if sty == 2
+                hBOS := true
+            else if sty == 3
+                hFVG := true
+            else
+                hOB := true
+            if cUsed and (sty == 1 or sty == 2)
+                cUsed := false
+                cFirst := -1
+                cArmed := -1
+        else if sty == 3 and cDir != 0
+            cDir := cDir   // 反向 FVG：忽略
+        else
+            cDir := sd
+            hCH := sty == 1
+            hBOS := sty == 2
+            hFVG := sty == 3
+            hOB := sty == 4
+            cUsed := false
+            cFirst := -1
+            cArmed := -1
+
+int cnt = (hCH ? 1 : 0) + (hBOS ? 1 : 0) + (hFVG ? 1 : 0) + (hOB ? 1 : 0)
+bool armed = cDir != 0 and cnt >= 3 and not cUsed
+if armed and cArmed < 0
+    cArmed := bar_index
+
+// ---------- 6. 回踩 OB1 → 第 3 根收線確認 ----------
+bool goSig = false
+float slP = na
+float tpP = na
+bool sopNarrow = false   // 停損比最小距離窄，且設定為「略過這個訊號」
+if armed
+    // 視窗過期（超過 3 根）或收盤穿越 OB 遠端邊界 → 重新等下一次碰到
+    if cFirst >= 0
+        bool expired = bar_index - cFirst > 2
+        bool breached = cDir == 1 ? close < zLo : close > zHi
+        if expired or breached
+            cFirst := -1
+    // 尚未開始：找最近的同向 OB（沒有 OB 且開啟時改找 FVG），第一次碰到的那根就是「第 1 根」
+    if cFirst < 0
+        int kd = 0
+        int o1 = f_best(obDir, obHi, obLo, cDir, close, 1e18)
+        if o1 == -1 and fvgZone
+            o1 := f_best(fvgDir, fvgHi, fvgLo, cDir, close, 1e18)
+            kd := 1
+        if o1 != -1
+            float b1Hi = kd == 0 ? array.get(obHi, o1) : array.get(fvgHi, o1)
+            float b1Lo = kd == 0 ? array.get(obLo, o1) : array.get(fvgLo, o1)
+            if (cDir == 1 and low <= b1Hi) or (cDir == -1 and high >= b1Lo)
+                cFirst := bar_index
+                zHi := b1Hi
+                zLo := b1Lo
+                zKind := kd
+                firstMid := (open + close) / 2
+    // 確認：收盤同時越過回踩區外緣與第 1 根實體中點
+    if cFirst >= 0 and bar_index - cFirst >= confirmFrom - 1
+        bool conf = cDir == 1 ? (close > zHi and close > firstMid) : (close < zLo and close < firstMid)
+        if conf and engulfExtra
+            conf := f_engulf(cDir)
+        if conf
+            // 第 2 個區域：比第 1 個更遠的、最近的同個種類區域
+            float zKey = cDir == 1 ? zHi : -zLo
+            int o2 = -1
+            float slRef = na
+            if zKind == 0
+                o2 := f_best(obDir, obHi, obLo, cDir, close, zKey)
+                if o2 != -1
+                    slRef := cDir == 1 ? array.get(obLo, o2) : array.get(obHi, o2)
+            else
+                o2 := f_best(fvgDir, fvgHi, fvgLo, cDir, close, zKey)
+                if o2 != -1
+                    slRef := cDir == 1 ? array.get(fvgLo, o2) : array.get(fvgHi, o2)
+            if not (needOb2 and o2 == -1)
+                float sl = o2 != -1 ? slRef : (cDir == 1 ? zLo : zHi)
+                float risk = (close - sl) * cDir
+                if risk > 0
+                    // 最小停損距離：太窄時把停損推遠（停利也跟著以新的 R 計算），或略過這個訊號
+                    float minRisk = sopAtrMin > 0 and not na(atrv) ? sopAtrMin * atrv : 0.0
+                    if risk < minRisk
+                        if sopAtrMode == "略過這個訊號"
+                            sopNarrow := true
+                        else
+                            sl := close - cDir * minRisk
+                            risk := minRisk
+                    goSig := true
+                    slP := sl
+                    tpP := rr > 0 ? close + cDir * risk * rr : na
+                    cUsed := true
+                    cFirst := -1
+
+bool dirLong  = tradeDir != "只做空"
+bool dirShort = tradeDir != "只做多"
+bool sopOn = goSig and useSop and not sopNarrow and (cDir == 1 ? dirLong : dirShort) and (not biasFilter or bsF == cDir)
+// bfF：過濾用週期是否沿用前一組判斷（僅供參考）
+bool sopConfirmed = sopOn and barstate.isconfirmed
+// 這根要畫的停損停利標示（3+1 或突刺進場共用）
+bool  lvNew = false
+int   lvDir = 0
+float lvSL = na
+float lvR1 = na
+float lvR2 = na
+float lvR3 = na
+int   lvN = 3
+// 持倉中（前一筆的停損停利都還沒碰到）又出現新訊號時的處理
+int  posDir   = strategy.position_size > 0 ? 1 : strategy.position_size < 0 ? -1 : 0
+bool inTrade  = posDir != 0
+bool doRev  = inTrade and posDir != cDir and posMode == "反向訊號：平倉並反手"
+bool allowSig = not inTrade or doRev
+bool grayOnly = inTrade and not allowSig and posMode == "顯示為灰色（不進場）"
+bool sopEnter = sopConfirmed and allowSig
+// 盤中預覽：這根還沒收線但目前合格 → 先畫虛線標記；之後的每一跳都會重算，
+// 收線時若不合格，TradingView 會自動移除這根上一跳畫的標記
+if sopOn and not barstate.isconfirmed and liveMarks and allowSig
+    label.new(bar_index, cDir == 1 ? low : high, "預備" + (cDir == 1 ? " 做多" : " 做空") + (doRev ? "（反手）" : "") + "\n（未收線）",
+         style=cDir == 1 ? label.style_label_up : label.style_label_down,
+         color=cDir == 1 ? color.new(color.teal, 70) : color.new(color.red, 70), textcolor=color.white, size=size.small)
+    line.new(bar_index, slP, bar_index + 12, slP, color=color.new(color.red, 50), style=line.style_dotted)
+    alert("3+1 預備訊號（尚未收線）：" + (cDir == 1 ? "做多 " : "做空 ") + syminfo.ticker + " " + str.tostring(close, format.mintick), alert.freq_once_per_bar)
+if sopEnter
+    alert("3+1 確認訊號：" + (doRev ? "平倉並反手 " : "") + (cDir == 1 ? "做多 " : "做空 ") + syminfo.ticker + " 進場 " + str.tostring(close, format.mintick) + " SL " + str.tostring(slP, format.mintick) + (na(tpP) ? "" : " TP " + str.tostring(tpP, format.mintick)), alert.freq_once_per_bar_close)
+
+if sopEnter
+    sigCount += 1
+    if showLbl
+        label.new(bar_index, cDir == 1 ? low : high, "#" + str.tostring(sigCount) + (cDir == 1 ? " 做多" : " 做空") + (doRev ? "（反手）" : "") + "\n" + str.tostring(close, format.mintick),
+             style=cDir == 1 ? label.style_label_up : label.style_label_down,
+             color=cDir == 1 ? color.new(color.teal, 0) : color.new(color.red, 0), textcolor=color.white, size=size.small)
+        if not showLvls
+            line.new(bar_index, slP, bar_index + 12, slP, color=color.red, style=line.style_dashed)
+            if not na(tpP)
+                line.new(bar_index, tpP, bar_index + 12, tpP, color=color.teal, style=line.style_dashed)
+    // 交給下方共用的標示區塊畫出停損／進場／TP
+    lvNew := true
+    lvDir := cDir
+    lvSL := slP
+    lvR1 := rr > 0 ? rr : 1.0
+    lvR2 := tp2R
+    lvR3 := tp3R
+    lvN := nTp
+    // 空手直接進場；反手時 strategy.entry 會先平掉反向部位再開新倉
+    strategy.entry("SOP", cDir == 1 ? strategy.long : strategy.short)
+    strategy.exit("SOP出場", "SOP", stop=slP, limit=tpP)
+else if sopConfirmed and grayOnly and showLbl
+    label.new(bar_index, cDir == 1 ? low : high, "持倉中" + (cDir == 1 ? " 做多" : " 做空") + "\n（不進場）",
+         style=cDir == 1 ? label.style_label_up : label.style_label_down,
+         color=color.new(color.gray, 40), textcolor=color.white, size=size.tiny)
+
+// ---------- 突刺進場：上漲中第一次回踩掃蕩型多方 OB，刺進 OB 後收盤收回 OB 上緣之上（空方相反） ----------
+var int spikeCount = 0
+// 突刺部位的狀態（TP1 後移到保本用）
+var int   spDirV = 0
+var float spEntry = na
+var float spT1 = na
+var float spT2 = na
+var float spT3 = na
+var int   spBarV = na
+var bool  spBE = false
+bool spikeGo = false
+int  spDir = 0
+float spSl = na
+if useSpike and barstate.isconfirmed
+    int nO3 = array.size(obDir)
+    int pick = -1
+    float pickKey = na
+    if nO3 > 0
+        for i = 0 to nO3 - 1
+            int od = array.get(obDir, i)
+            float oh = array.get(obHi, i)
+            float ol = array.get(obLo, i)
+            bool touched = od == 1 ? low <= oh : high >= ol
+            if array.get(obAt, i) < bar_index and not array.get(obTch, i) and touched
+                // 第一次回踩：不論有沒有進場，之後這個 OB 都不再觸發
+                array.set(obTch, i, true)
+                bool trendOk = not spikeTrend or array.get(trArr, 0) == od
+                bool reject = od == 1 ? close > oh : close < ol
+                // SMC／ICT 過濾
+                float slTry = od == 1 ? ol - spBuf * atrv : oh + spBuf * atrv
+                bool riskOk = spMinRisk <= 0 or math.abs(close - slTry) / close * 100 >= spMinRisk
+                bool biasOk = not spBias or bsP == od
+                float swHi = array.get(pHL, 1)
+                float swLo = array.get(pLL, 1)
+                bool pdOk = not spPD or na(swHi) or na(swLo) or (od == 1 ? close < (swHi + swLo) / 2 : close > (swHi + swLo) / 2)
+                bool dispOk = not spDisp or array.get(obDisp, i)
+                bool sessOk = not spSess or not na(time(timeframe.period, spSessStr, "UTC"))
+                float rngK = high - low
+                bool wickOk = not spWick or (rngK > 0 and (od == 1 ? math.min(open, close) - low : high - math.max(open, close)) >= 0.4 * rngK)
+                bool dirOk = od == 1 ? dirLong : dirShort
+                bool allOk = dirOk and trendOk and riskOk and biasOk and pdOk and dispOk and sessOk and wickOk
+                if array.get(obSw, i) and reject and allOk
+                    float key = od == 1 ? oh : -ol
+                    if pick == -1 or key > pickKey
+                        pick := i
+                        pickKey := key
+                // 除錯：掃蕩型 OB 第一次回踩也收回了，但被過濾條件擋掉 → 標出沒通過的條件
+                else if spDebug and array.get(obSw, i) and reject
+                    string why = (dirOk ? "" : " 方向") + (trendOk ? "" : " 結構") + (riskOk ? "" : " 停損太窄") + (biasOk ? "" : " 偏見") + (pdOk ? "" : " 折溢價") + (dispOk ? "" : " 位移") + (sessOk ? "" : " 時段") + (wickOk ? "" : " 影線")
+                    label.new(bar_index, od == 1 ? low : high, "× 突刺" + (od == 1 ? "多" : "空") + "\n未通過:" + why,
+                         style=od == 1 ? label.style_label_up : label.style_label_down, color=color.new(color.gray, 60), textcolor=color.white, size=size.tiny)
+    if pick != -1 and strategy.position_size == 0 and not sopEnter
+        spikeGo := true
+        spDir := array.get(obDir, pick)
+        spSl := spDir == 1 ? array.get(obLo, pick) - spBuf * atrv : array.get(obHi, pick) + spBuf * atrv
+    // 訊號成立但已經有部位（或同一根 3+1 已進場）→ 只標示，不進場
+    else if pick != -1 and spShowBlk and showLbl
+        int bd = array.get(obDir, pick)
+        label.new(bar_index, bd == 1 ? low : high, "突刺" + (bd == 1 ? " 做多" : " 做空") + "\n（持倉中未進場）",
+             style=bd == 1 ? label.style_label_up : label.style_label_down, color=color.new(#7e57c2, 60), textcolor=color.white, size=size.tiny)
+
+if spikeGo
+    spikeCount += 1
+    float spRisk = math.abs(close - spSl)
+    float t1 = close + spDir * spR1 * spRisk
+    float t2 = close + spDir * spR2 * spRisk
+    float t3 = close + spDir * spR3 * spRisk
+    strategy.entry("SPIKE", spDir == 1 ? strategy.long : strategy.short)
+    strategy.exit("突刺TP1", "SPIKE", qty_percent=34, stop=spSl, limit=t1)
+    strategy.exit("突刺TP2", "SPIKE", qty_percent=33, stop=spSl, limit=t2)
+    strategy.exit("突刺TP3", "SPIKE", stop=spSl, limit=t3)
+    spDirV := spDir
+    spEntry := close
+    spT1 := t1
+    spT2 := t2
+    spT3 := t3
+    spBarV := bar_index
+    spBE := false
+    if showLbl
+        label.new(bar_index, spDir == 1 ? low : high, "突刺 #" + str.tostring(spikeCount) + (spDir == 1 ? " 做多" : " 做空") + "\n" + str.tostring(close, format.mintick),
+             style=spDir == 1 ? label.style_label_up : label.style_label_down,
+             color=spDir == 1 ? color.new(#7e57c2, 0) : color.new(#ab47bc, 0), textcolor=color.white, size=size.small)
+    alert("突刺進場：" + (spDir == 1 ? "做多 " : "做空 ") + syminfo.ticker + " 進場 " + str.tostring(close, format.mintick) + " SL " + str.tostring(spSl, format.mintick) + " TP1 " + str.tostring(t1, format.mintick) + " TP2 " + str.tostring(t2, format.mintick) + " TP3 " + str.tostring(t3, format.mintick), alert.freq_once_per_bar_close)
+    lvNew := true
+    lvDir := spDir
+    lvSL := spSl
+    lvR1 := spR1
+    lvR2 := spR2
+    lvR3 := spR3
+    lvN := 3
+
+// ---------- 停損／停利標示（3+1 與突刺進場共用）：從進場那根畫到右邊，右端貼價格標籤 ----------
+if lvNew and showLvls
+    if keepLast or clearOnExit
+        for ln in lvlLines
+            line.delete(ln)
+        for lb in lvlLbls
+            label.delete(lb)
+        array.clear(lvlLines)
+        array.clear(lvlLbls)
+    float rk = math.abs(close - lvSL)
+    int xR = bar_index + lvlExt
+    array<float> lvP = array.new_float()
+    array<string> lvT = array.new_string()
+    array<color> lvC = array.new_color()
+    array.push(lvP, lvSL)
+    array.push(lvT, "SL: ")
+    array.push(lvC, color.new(#ef5350, 0))
+    if showEntry
+        array.push(lvP, close)
+        array.push(lvT, "進場: ")
+        array.push(lvC, color.new(#2962ff, 0))
+    array<float> tpRs = array.from(lvR1, lvR2, lvR3)
+    for t = 0 to lvN - 1
+        array.push(lvP, close + lvDir * array.get(tpRs, t) * rk)
+        array.push(lvT, "TP" + str.tostring(t + 1) + ": ")
+        array.push(lvC, color.new(#26a69a, 0))
+    for q = 0 to array.size(lvP) - 1
+        float pq = array.get(lvP, q)
+        color cq = array.get(lvC, q)
+        array.push(lvlLines, line.new(bar_index, pq, xR, pq, color=cq, width=q == 0 ? 2 : 1, style=array.get(lvT, q) == "進場: " ? line.style_dotted : line.style_solid))
+        array.push(lvlLbls, label.new(xR, pq, array.get(lvT, q) + str.tostring(pq, format.mintick), style=label.style_label_left, color=color.new(cq, 25), textcolor=color.white, size=size.small))
+    lvlLive := true
+    lvlBar := bar_index
+
+// ---------- 出場管理 ----------
+// A. 突刺到 TP1 後，TP2／TP3 兩份的停損移到進場價（保本）
+if spDirV != 0 and bar_index > spBarV
+    if strategy.position_size == 0
+        spDirV := 0
+    else if beAfterTp1 and not spBE and (spDirV == 1 ? high >= spT1 : low <= spT1)
+        spBE := true
+        strategy.exit("突刺TP2", "SPIKE", qty_percent=33, stop=spEntry, limit=spT2)
+        strategy.exit("突刺TP3", "SPIKE", stop=spEntry, limit=spT3)
+        if array.size(lvlLines) > 0 and array.size(lvlLbls) > 0
+            line.set_y1(array.get(lvlLines, 0), spEntry)
+            line.set_y2(array.get(lvlLines, 0), spEntry)
+            label.set_y(array.get(lvlLbls, 0), spEntry)
+            label.set_text(array.get(lvlLbls, 0), "SL（保本）: " + str.tostring(spEntry, format.mintick))
+        alert("突刺到 TP1，停損移到保本 " + str.tostring(spEntry, format.mintick), alert.freq_once_per_bar)
+// B. 時間停損：持倉太久就平倉，避免一直卡住新的訊號
+if timeStop > 0 and strategy.position_size != 0 and strategy.opentrades > 0 and barstate.isconfirmed
+    if bar_index - strategy.opentrades.entry_bar_index(0) >= timeStop
+        strategy.close_all(comment="時間停損")
+        alert("時間停損：持倉超過 " + str.tostring(timeStop) + " 根 K 棒，已平倉", alert.freq_once_per_bar_close)
+
+// 持倉期間把標示線延伸到最新 K 棒右邊；部位出場後就停在出場那根
+if lvlLive
+    if bar_index > lvlBar and strategy.position_size == 0
+        lvlLive := false
+        // 這筆單結束：清掉進場、停損、停利的標示
+        if clearOnExit
+            for ln in lvlLines
+                line.delete(ln)
+            for lb in lvlLbls
+                label.delete(lb)
+            array.clear(lvlLines)
+            array.clear(lvlLbls)
+    else if keepLast or clearOnExit
+        int xR2 = bar_index + lvlExt
+        for ln in lvlLines
+            line.set_x2(ln, xR2)
+        for lb in lvlLbls
+            label.set_x(lb, xR2)
+
+// ---------- 7. 更新「CH 之後」的極值（供下一根的 BOS 判斷） ----------
+for s = 0 to 1
+    if array.get(chIdxArr, s) == bar_index
+        array.set(sinceHArr, s, high)
+        array.set(sinceLArr, s, low)
+    else if array.get(chIdxArr, s) >= 0
+        array.set(sinceHArr, s, math.max(array.get(sinceHArr, s), high))
+        array.set(sinceLArr, s, math.min(array.get(sinceLArr, s), low))
+
+// ---------- 標記 ----------
+plotshape(showEv and evCHb, "CH↑", shape.triangleup, location.belowbar, color.green, text="CH", size=size.tiny)
+plotshape(showEv and evCHs, "CH↓", shape.triangledown, location.abovebar, color.red, text="CH", size=size.tiny)
+plotshape(showEv and evBOSb, "BOS↑", shape.triangleup, location.belowbar, color.new(color.green, 40), text="BOS", size=size.tiny)
+plotshape(showEv and evBOSs, "BOS↓", shape.triangledown, location.abovebar, color.new(color.red, 40), text="BOS", size=size.tiny)
+plotshape(showEv and evBOSbBad, "BOS↑未過CH高", shape.xcross, location.belowbar, color.gray, size=size.tiny)
+plotshape(showEv and evBOSsBad, "BOS↓未過CH低", shape.xcross, location.abovebar, color.gray, size=size.tiny)
+
+// 不顯示的輔助線（確保腳本一定有輸出，避免「至少要有一個 plot / strategy」的編譯錯誤）
+// ---------- 偏見燈號表格 ----------
+f_tfLabel(string tf) =>
+    int sec = timeframe.in_seconds(tf)
+    sec >= 86400 ? (sec == 86400 ? "D" : sec == 604800 ? "W" : str.tostring(sec / 86400, "#") + "D") : sec >= 3600 ? str.tostring(sec / 3600, "#") + "h" : str.tostring(sec / 60, "#") + "m"
+
+var table biasTb = table.new(biasPos == "右上" ? position.top_right : biasPos == "右下" ? position.bottom_right : biasPos == "左上" ? position.top_left : position.bottom_left, 3, 7, bgcolor=color.new(#1e222d, 10), border_color=color.new(#363a45, 0), border_width=1)
+if showBias and barstate.islast
+    color hdr = color.new(#d1d4dc, 0)
+    table.cell(biasTb, 0, 0, "時區", text_color=hdr, text_size=size.small)
+    table.cell(biasTb, 1, 0, "偏見", text_color=hdr, text_size=size.small)
+    table.cell(biasTb, 2, 0, "達成", text_color=hdr, text_size=size.small)
+    array<string> tfs = array.from(bTf1, bTf2, bTf3, bTf4, bTf5)
+    array<int>    bss = array.from(bs1, bs2, bs3, bs4, bs5)
+    array<float>  bts = array.from(bt1, bt2, bt3, bt4, bt5)
+    array<bool>   bhs = array.from(bh1, bh2, bh3, bh4, bh5)
+    array<bool>   bfs = array.from(bf1, bf2, bf3, bf4, bf5)
+    bool anyFb = false
+    int chartSec = timeframe.in_seconds()
+    for r = 0 to 4
+        string tfr = array.get(tfs, r)
+        bool lower = timeframe.in_seconds(tfr) < chartSec
+        int bv = array.get(bss, r)
+        bool fb = not lower and array.get(bfs, r)
+        if fb
+            anyFb := true
+        color lamp0 = lower or na(bv) or bv == 0 ? color.gray : bv == 1 ? #26a69a : #ef5350
+        color lamp = fb ? color.new(lamp0, 45) : lamp0
+        table.cell(biasTb, 0, r + 1, f_tfLabel(tfr), text_color=hdr, text_size=size.small)
+        table.cell(biasTb, 1, r + 1, fb ? "●*" : "●", text_color=lamp, text_size=size.normal, tooltip=lower ? "比圖表小，無法判斷" : na(array.get(bts, r)) ? "" : "目標：" + str.tostring(array.get(bts, r), format.mintick))
+        table.cell(biasTb, 2, r + 1, lower ? "" : array.get(bhs, r) ? "✓" : "…", text_color=array.get(bhs, r) ? #26a69a : color.gray, text_size=size.small)
+    table.cell(biasTb, 1, 6, anyFb ? "*沿用前組" : "", text_color=color.gray, text_size=size.tiny)
+
+plot(array.get(trArr, 0), "內部結構方向(1多/-1空)", color=color.gray, display=display.data_window)
