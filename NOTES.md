@@ -8,6 +8,7 @@
 | `index.html` | 交易訓練遊戲（單一網頁，GitHub Pages：https://rhysshow.github.io/Trading-Game/）。5 分 K、按買進／賣出／等待推進 K 棒，含復盤與統計 |
 | `3plus1_sop_v5.pine` | TradingView 主要策略（使用者實際在用） |
 | `htf_candles.pine` | TradingView 指標：右側 HTF 蠟燭＋較高週期斐波那契 OTE（只顯示與警報） |
+| `footprint.pine` | TradingView 指標：各價位「賣量 x 買量」格子＋Delta（用小週期 K 棒估算，非逐筆成交；尚未在 TradingView 編譯驗證） |
 | `3plus1_sop.pine`、`_v2`～`_v4`、`_v6` | 舊版，保留不動（v6 是 v5 早期版本＋分批進出，未同步後來的更新） |
 
 ## 3+1 SOP 規則（來自使用者課程）

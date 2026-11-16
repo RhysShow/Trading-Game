@@ -1,0 +1,86 @@
+//@version=5
+// Footprint 買賣成交量（估算版）
+// 每根 K 棒右邊畫出各價位的「賣方成交量 x 買方成交量」，K 棒下方顯示 Delta（買 − 賣）與總量。
+// 重要：TradingView 的指標拿不到逐筆成交，也拿不到委託簿（掛單）。
+//   這裡是把每根 K 棒拆成更小週期的 K 棒來「估算」：
+//   - 小 K 棒的成交量平均分給它高低點經過的每一格價位
+//   - 買量比例 = (收盤 − 最低) / (最高 − 最低)，其餘算賣量；高低相同時，收盤不低於前一筆算買量
+//   所以數字和真正的 footprint（逐筆成交）不會一樣；「拆解用的小週期」越小越接近。
+// 用法：圖表要放大到每根 K 棒夠寬，格子裡的字才看得到。
+indicator("Footprint 買賣成交量（估算）", "Footprint", overlay=true, max_boxes_count=500, max_labels_count=500)
+
+ltf      = input.timeframe("1", "拆解用的小週期（越小越準；秒級週期需要較高的 TradingView 方案，且必須比圖表週期小）")
+nBars    = input.int(15, "顯示最近幾根 K 棒（格子總數上限 500，太多時最舊的會自動消失）", minval=1, maxval=100)
+rowsAuto = input.int(12, "自動：一般大小的 K 棒大約分成幾格", minval=4, maxval=40)
+rowMan   = input.float(0.0, "手動指定每格的價位大小（0 = 自動）", minval=0)
+imbRatio = input.float(3.0, "失衡倍數：一邊的量 ≥ 另一邊的幾倍時，文字改用黃色", minval=1.0, step=0.5)
+showPoc  = input.bool(true, "用白框標出成交量最大的一格（POC）")
+showSum  = input.bool(true, "K 棒下方顯示 Delta 與總量")
+
+int MAX_ROWS = 40
+color cBuy  = #089981
+color cSell = #F23645
+
+[lO, lH, lL, lC, lV] = request.security_lower_tf(syminfo.tickerid, ltf, [open, high, low, close, volume])
+
+float atrv = ta.atr(50)
+
+if last_bar_index - bar_index < nBars and array.size(lV) > 0
+    // 每格大小
+    float rs = rowMan > 0 ? rowMan : nz(atrv, high - low) / rowsAuto
+    rs := math.max(syminfo.mintick, math.round(rs / syminfo.mintick) * syminfo.mintick)
+    while math.floor(high / rs + 1e-9) - math.floor(low / rs + 1e-9) + 1 > MAX_ROWS
+        rs := rs * 2
+    int base = int(math.floor(low / rs + 1e-9))
+    int nR = int(math.floor(high / rs + 1e-9)) - base + 1
+    array<float> buyA  = array.new_float(nR, 0.0)
+    array<float> sellA = array.new_float(nR, 0.0)
+
+    // 把小週期的成交量分配到各格
+    float prevC = open
+    for i = 0 to array.size(lV) - 1
+        float h = array.get(lH, i)
+        float l = array.get(lL, i)
+        float c = array.get(lC, i)
+        float v = nz(array.get(lV, i))
+        float buyPct = h > l ? (c - l) / (h - l) : (c >= prevC ? 1.0 : 0.0)
+        prevC := c
+        int r0 = math.max(0, math.min(nR - 1, int(math.floor(l / rs + 1e-9)) - base))
+        int r1 = math.max(0, math.min(nR - 1, int(math.floor(h / rs + 1e-9)) - base))
+        float share = v / (r1 - r0 + 1)
+        for r = r0 to r1
+            array.set(buyA, r, array.get(buyA, r) + share * buyPct)
+            array.set(sellA, r, array.get(sellA, r) + share * (1 - buyPct))
+
+    // 找出最大的一格（決定顏色深淺與 POC）
+    float maxV = 0.0
+    int pocR = 0
+    float totB = 0.0
+    float totS = 0.0
+    for r = 0 to nR - 1
+        float b = array.get(buyA, r)
+        float s = array.get(sellA, r)
+        totB += b
+        totS += s
+        if b + s > maxV
+            maxV := b + s
+            pocR := r
+
+    // 畫格子：左邊數字 = 賣量，右邊數字 = 買量
+    for r = 0 to nR - 1
+        float b = array.get(buyA, r)
+        float s = array.get(sellA, r)
+        if b + s > 0
+            float strength = maxV > 0 ? (b + s) / maxV : 0
+            color bg = color.new(b >= s ? cBuy : cSell, 85 - 65 * strength)
+            bool imb = (b >= imbRatio * s and b > 0) or (s >= imbRatio * b and s > 0)
+            bool isPoc = showPoc and r == pocR
+            box.new(bar_index, (base + r + 1) * rs, bar_index + 1, (base + r) * rs,
+                 border_color=isPoc ? color.white : color.new(color.black, 100), border_width=1, bgcolor=bg,
+                 text=str.tostring(s, format.volume) + " x " + str.tostring(b, format.volume),
+                 text_color=imb ? color.yellow : color.white, text_size=size.auto, text_halign=text.align_center)
+
+    if showSum
+        float d = totB - totS
+        label.new(bar_index, base * rs - rs, "Δ " + (d >= 0 ? "+" : "") + str.tostring(d, format.volume) + "\n量 " + str.tostring(totB + totS, format.volume),
+             style=label.style_none, textcolor=d >= 0 ? cBuy : cSell, size=size.small)
