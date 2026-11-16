@@ -1,0 +1,269 @@
+//@version=5
+// 馬刺 v1（策略版）：大週期掃流動性 + 5 分鐘 同向 FVG → CHoCH 收盤市價進場
+// 做多：
+//   A. 大週期（預設 1H、4H，任一符合即可）：當下這根（未收盤）最低價低於前一根最低點，
+//      開盤價在前一根最低點之上，現價在自己開盤價之上（綠 K）
+//   B. 5 分鐘：掃蕩最低點「之後」先出現看漲 FVG，再由「掃蕩前最近的擺動高點」被收盤突破（CHoCH）
+//      CHoCH 必須是掃低後第一次收盤突破；已經破過的（BOS）、反向 FVG、CHoCH 後才出現的 FVG 都不算
+//   C. CHoCH 收盤那根市價進場；停利 TP1/TP2/TP3 = 1R/1.5R/2R 各 1/3
+// 做空：完全鏡像。A、B 同時符合時部位一樣，只標記 ★（可單獨測試）
+strategy("馬刺 v1", overlay=true, calc_on_every_tick=true, initial_capital=10000,
+     default_qty_type=strategy.cash, default_qty_value=1000,
+     commission_type=strategy.commission.percent, commission_value=0.05,
+     process_orders_on_close=true, pyramiding=0,
+     max_bars_back=500, max_labels_count=500, max_lines_count=500)
+
+// ==== SHARED BEGIN ====
+gH = "大週期（掃流動性）"
+tfA     = input.timeframe("60", "大週期 A（預設 1H）", group=gH)
+tfB     = input.timeframe("240", "大週期 B（預設 4H）", group=gH)
+useA    = input.bool(true, "啟用大週期 A", group=gH)
+useB    = input.bool(true, "啟用大週期 B", group=gH)
+needBoth = input.bool(false, "必須 A、B 同時符合才進場（單獨測試用）", group=gH)
+sideL   = input.bool(true, "做多", inline="sd", group=gH)
+sideS   = input.bool(true, "做空", inline="sd", group=gH)
+gM = "5 分鐘結構"
+pvLen   = input.int(2, "擺動點左右根數（找 CHoCH 要突破的高／低點）", minval=1, maxval=10, group=gM)
+lvlAge  = input.int(30, "擺動點最多在掃蕩極值前幾根", minval=3, group=gM)
+minFvg  = input.float(0.0, "FVG 最小缺口（ATR 倍數，0 = 不限）", minval=0.0, step=0.05, group=gM)
+gR = "停損／停利"
+slMode  = input.string("掃蕩極值", "停損位置", options=["掃蕩極值", "FVG 遠端邊界"], group=gR)
+slBuf   = input.float(0.0, "停損緩衝（ATR 倍數）", minval=0.0, step=0.1, group=gR)
+minRisk = input.float(0.0, "最小停損距離（% 價格，0 = 不限）", minval=0.0, step=0.05, group=gR)
+r1 = input.float(1.0, "TP1（R）", minval=0.1, step=0.1, inline="rr", group=gR)
+r2 = input.float(1.5, "TP2（R）", minval=0.1, step=0.1, inline="rr", group=gR)
+r3 = input.float(2.0, "TP3（R）", minval=0.1, step=0.1, inline="rr", group=gR)
+beAfterTp1 = input.bool(true, "到 TP1 後剩下部位停損移到進場價", group=gR)
+timeStop   = input.int(100, "時間停損（K 棒數，0 = 不用）", minval=0, group=gR)
+gV = "顯示"
+showLbl  = input.bool(true, "標示進場與 CHoCH 突破線", group=gV)
+showLvls = input.bool(true, "畫 SL／TP 線", group=gV)
+
+float atrv = ta.atr(14)
+
+// 追蹤目前這根大週期 K 棒（用圖表 K 棒累積，歷史與即時結果一致）
+htfTrack(string tf) =>
+    var float o = na
+    var float h = na
+    var float l = na
+    var float ph = na
+    var float pl = na
+    var int s = na
+    var int hB = na
+    var int lB = na
+    bool nw = ta.change(time(tf)) != 0
+    if nw
+        ph := h
+        pl := l
+        o := open
+        h := high
+        l := low
+        s := bar_index
+        hB := bar_index
+        lB := bar_index
+    else
+        if high > h
+            h := high
+            hB := bar_index
+        if low < l
+            l := low
+            lB := bar_index
+    [o, h, l, ph, pl, s, hB, lB]
+
+// 5 分鐘擺動點
+var array<int>   phB = array.new_int()
+var array<float> phP = array.new_float()
+var array<int>   plB = array.new_int()
+var array<float> plP = array.new_float()
+float pHv = ta.pivothigh(high, pvLen, pvLen)
+float pLv = ta.pivotlow(low, pvLen, pvLen)
+if barstate.isconfirmed and not na(pHv)
+    array.push(phB, bar_index - pvLen)
+    array.push(phP, pHv)
+    if array.size(phB) > 40
+        array.shift(phB)
+        array.shift(phP)
+if barstate.isconfirmed and not na(pLv)
+    array.push(plB, bar_index - pvLen)
+    array.push(plP, pLv)
+    if array.size(plB) > 40
+        array.shift(plB)
+        array.shift(plP)
+
+// 最近的 FVG（只需要最新一個：它的起點最晚，滿足「在掃蕩之後」就代表存在）
+var int   fvgBullFirst = -1
+var float fvgBullBot   = na
+var int   fvgBearFirst = -1
+var float fvgBearTop   = na
+
+// 掃蕩極值之前、最近的擺動點（年齡限制內）
+findLvl(array<int> bs, array<float> ps, int before, int age) =>
+    float r = na
+    int n = array.size(bs)
+    if n > 0
+        for i = n - 1 to 0
+            int b = array.get(bs, i)
+            if b < before
+                if b >= before - age
+                    r := array.get(ps, i)
+                break
+    r
+
+// 掃蕩極值那根之後（不含現在這根）的最高收盤（做多）／最低收盤（做空）
+extCloseSince(int d, int fromBar) =>
+    float r = d == 1 ? -1e10 : 1e10
+    int n = bar_index - fromBar
+    if n >= 1
+        for k = 1 to n
+            r := d == 1 ? math.max(r, close[k]) : math.min(r, close[k])
+    r
+
+// 檢查某個大週期、某方向是否成立；回傳 [是否成立, CHoCH 水平, 掃蕩極值]
+chk(int d, float o, float h, float l, float ph, float pl, int hB, int lB) =>
+    bool ok = false
+    float lvl = na
+    float ext = na
+    int   xb = d == 1 ? lB : hB
+    float xv = d == 1 ? l : h
+    float pv = d == 1 ? pl : ph
+    int   fvgF = d == 1 ? fvgBullFirst : fvgBearFirst
+    if not na(pv) and not na(o) and not na(xb) and bar_index > xb
+        bool sw = d == 1 ? (xv < pv and o > pv and close > o) : (xv > pv and o < pv and close < o)
+        if sw and fvgF >= xb
+            lvl := d == 1 ? findLvl(phB, phP, xb, lvlAge) : findLvl(plB, plP, xb, lvlAge)
+            if not na(lvl)
+                float mc = extCloseSince(d, xb)
+                bool brk = d == 1 ? (close > lvl and mc <= lvl) : (close < lvl and mc >= lvl)
+                if brk
+                    ok := true
+                    ext := xv
+    [ok, lvl, ext]
+
+bool useAok = useA and timeframe.in_seconds(tfA) > timeframe.in_seconds()
+bool useBok = useB and timeframe.in_seconds(tfB) > timeframe.in_seconds()
+
+[oA, hA, lA, phA, plA, sA, hbA, lbA] = htfTrack(tfA)
+[oB, hB_, lB_, phB_, plB_, sB, hbB, lbB] = htfTrack(tfB)
+
+[okLA, lvLA, exLA] = chk(1, oA, hA, lA, phA, plA, hbA, lbA)
+[okSA, lvSA, exSA] = chk(-1, oA, hA, lA, phA, plA, hbA, lbA)
+[okLB, lvLB, exLB] = chk(1, oB, hB_, lB_, phB_, plB_, hbB, lbB)
+[okSB, lvSB, exSB] = chk(-1, oB, hB_, lB_, phB_, plB_, hbB, lbB)
+
+// 每根大週期 K 棒每個方向只試一次
+var int fAL = na
+var int fAS = na
+var int fBL = na
+var int fBS = na
+bool pAL = sideL and useAok and okLA and (na(fAL) or fAL != sA)
+bool pAS = sideS and useAok and okSA and (na(fAS) or fAS != sA)
+bool pBL = sideL and useBok and okLB and (na(fBL) or fBL != sB)
+bool pBS = sideS and useBok and okSB and (na(fBS) or fBS != sB)
+bool goL = needBoth ? (pAL and pBL) : (pAL or pBL)
+bool goS = needBoth ? (pAS and pBS) : (pAS or pBS)
+
+bool go = false
+int sigDir = 0
+float sigSL = na
+float sigLvl = na
+int sigXb = na
+string sigTag = ""
+if barstate.isconfirmed and (goL or goS)
+    int d = goL ? 1 : -1
+    bool pa = d == 1 ? pAL : pAS
+    bool pb = d == 1 ? pBL : pBS
+    float ex = d == 1 ? (pa ? exLA : exLB) : (pa ? exSA : exSB)
+    float lv = d == 1 ? (pa ? lvLA : lvLB) : (pa ? lvSA : lvSB)
+    int xbv = d == 1 ? (pa ? lbA : lbB) : (pa ? hbA : hbB)
+    float sl = slMode == "FVG 遠端邊界" ? (d == 1 ? fvgBullBot : fvgBearTop) : ex
+    sl := sl - d * slBuf * atrv
+    float rk = math.abs(close - sl)
+    bool riskOk = (d == 1 ? sl < close : sl > close) and rk > 0 and rk / close * 100 >= minRisk
+    if pa
+        if d == 1
+            fAL := sA
+        else
+            fAS := sA
+    if pb
+        if d == 1
+            fBL := sB
+        else
+            fBS := sB
+    if riskOk
+        go := true
+        sigDir := d
+        sigSL := sl
+        sigLvl := lv
+        sigXb := xbv
+        sigTag := pa and pb ? "A+B ★" : (pa ? "A" : "B")
+
+if go and showLbl
+    label.new(bar_index, sigDir == 1 ? low : high, "馬刺 " + (sigDir == 1 ? "做多 " : "做空 ") + sigTag + "\n" + str.tostring(close, format.mintick),
+         style=sigDir == 1 ? label.style_label_up : label.style_label_down,
+         color=sigDir == 1 ? color.new(#00897b, 0) : color.new(#c2185b, 0), textcolor=color.white, size=size.small)
+    line.new(sigXb, sigLvl, bar_index, sigLvl, color=color.new(color.gray, 20), style=line.style_dashed)
+
+if go and showLvls
+    float rkv = math.abs(close - sigSL)
+    line.new(bar_index, sigSL, bar_index + 30, sigSL, color=color.new(#ef5350, 0), width=2)
+    line.new(bar_index, close + sigDir * r1 * rkv, bar_index + 30, close + sigDir * r1 * rkv, color=color.new(#26a69a, 0))
+    line.new(bar_index, close + sigDir * r2 * rkv, bar_index + 30, close + sigDir * r2 * rkv, color=color.new(#26a69a, 0))
+    line.new(bar_index, close + sigDir * r3 * rkv, bar_index + 30, close + sigDir * r3 * rkv, color=color.new(#26a69a, 0))
+
+if go
+    alert("馬刺 " + (sigDir == 1 ? "做多 " : "做空 ") + sigTag + " " + syminfo.ticker + " 進場 " + str.tostring(close, format.mintick) + " SL " + str.tostring(sigSL, format.mintick), alert.freq_once_per_bar_close)
+
+// FVG 更新放在偵測之後：CHoCH 那根自己形成的 FVG 不算「先於 CHoCH」
+if barstate.isconfirmed
+    if low > high[2] and (low - high[2]) >= minFvg * atrv
+        fvgBullFirst := bar_index - 2
+        fvgBullBot := high[2]
+    if high < low[2] and (low[2] - high) >= minFvg * atrv
+        fvgBearFirst := bar_index - 2
+        fvgBearTop := low[2]
+// ==== SHARED END ====
+
+// ---------- 策略部分：進場與出場 ----------
+var int mzN = 0
+var int   mzDir = 0
+var float mzEntry = na
+var float mzT1 = na
+var float mzT2 = na
+var float mzT3 = na
+var float mzSL = na
+var int   mzBar = na
+var bool  mzBE = false
+
+if go and strategy.position_size == 0
+    mzN += 1
+    float rk0 = math.abs(close - sigSL)
+    float t1 = close + sigDir * r1 * rk0
+    float t2 = close + sigDir * r2 * rk0
+    float t3 = close + sigDir * r3 * rk0
+    strategy.entry("MAZI", sigDir == 1 ? strategy.long : strategy.short)
+    strategy.exit("馬刺TP1", "MAZI", qty_percent=34, stop=sigSL, limit=t1)
+    strategy.exit("馬刺TP2", "MAZI", qty_percent=33, stop=sigSL, limit=t2)
+    strategy.exit("馬刺TP3", "MAZI", stop=sigSL, limit=t3)
+    mzDir := sigDir
+    mzEntry := close
+    mzSL := sigSL
+    mzT1 := t1
+    mzT2 := t2
+    mzT3 := t3
+    mzBar := bar_index
+    mzBE := false
+
+// 到 TP1 後，TP2／TP3 兩份的停損移到進場價
+if mzDir != 0 and bar_index > mzBar
+    if strategy.position_size == 0
+        mzDir := 0
+    else if beAfterTp1 and not mzBE and (mzDir == 1 ? high >= mzT1 : low <= mzT1)
+        mzBE := true
+        strategy.exit("馬刺TP2", "MAZI", qty_percent=33, stop=mzEntry, limit=mzT2)
+        strategy.exit("馬刺TP3", "MAZI", stop=mzEntry, limit=mzT3)
+        alert("馬刺到 TP1，停損移到保本 " + str.tostring(mzEntry, format.mintick), alert.freq_once_per_bar)
+
+// 時間停損
+if timeStop > 0 and strategy.position_size != 0 and strategy.opentrades > 0 and barstate.isconfirmed
+    if bar_index - strategy.opentrades.entry_bar_index(0) >= timeStop
+        strategy.close_all(comment="時間停損")
